@@ -626,6 +626,10 @@ impl App {
         let mut swap = None;
         let multi = matches!(input, Input::PdfMany | Input::Images);
         let n = self.files.len();
+        if n > 1 {
+            ui.weak(format!("{n} file dipilih"));
+        }
+        egui::ScrollArea::vertical().max_height(170.0).auto_shrink([false, true]).id_salt("filelist").show(ui, |ui| {
         for (i, f) in self.files.iter().enumerate() {
             ui.horizontal(|ui| {
                 let name = f.file_name().and_then(|s| s.to_str()).unwrap_or("?");
@@ -647,6 +651,7 @@ impl App {
                 }
             });
         }
+        });
         if let Some((a, b)) = swap {
             self.files.swap(a, b);
             self.active = b;
@@ -1048,17 +1053,20 @@ impl App {
                 self.api_note(ui);
             }
         }
-        if t != Tool::Compare {
-            self.output_section(ui);
-            let label = match t {
-                Tool::Summarizer => "Ringkas",
-                Tool::Translate => "Terjemahkan",
-                Tool::PdfForms => "Isi form & simpan",
-                _ => "Proses",
-            };
-            self.run_button(ui, ctx, label);
-        }
         self.result_ui(ui);
+    }
+
+    /// Bilah bawah tetap: lokasi simpan + tombol proses (selalu terlihat, berapa pun jumlah file).
+    fn run_bar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        self.output_section(ui);
+        let label = match self.tool {
+            Tool::Summarizer => "Ringkas",
+            Tool::Translate => "Terjemahkan",
+            Tool::PdfForms => "Isi form & simpan",
+            _ => "Proses",
+        };
+        self.run_button(ui, ctx, label);
+        ui.add_space(2.0);
     }
 
     fn api_note(&self, ui: &mut egui::Ui) {
@@ -1799,6 +1807,11 @@ impl eframe::App for App {
         if show_pv {
             egui::SidePanel::right("preview").resizable(true).default_width(520.0).min_width(280.0).show(ctx, |ui| {
                 self.preview_ui(ui);
+            });
+        }
+        if self.tool != Tool::Compare {
+            egui::TopBottomPanel::bottom("runbar").show(ctx, |ui| {
+                self.run_bar(ui, ctx);
             });
         }
         egui::CentralPanel::default().show(ctx, |ui| {
