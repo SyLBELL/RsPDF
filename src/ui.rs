@@ -1,5 +1,7 @@
 use anyhow::{anyhow, Result};
-use eframe::egui::{self, load::SizedTexture, Color32, Pos2, Rect, RichText, Sense, Stroke, TextureHandle, Vec2};
+use crate::icons;
+use crate::theme::{self, Accent, BannerKind, CardKind, Kind};
+use eframe::egui::{self, load::SizedTexture, Align, Align2, Color32, Id, Layout, Margin, Order, Pos2, Rect, RichText, Rounding, Sense, Stroke, TextureHandle, Vec2};
 use pdf_studio::ai;
 use pdf_studio::convert::{self, ImgPdfOpts, OfficeKind, PageMode, PptMode};
 use pdf_studio::pdfops::{self, CompressOpts, EditItem, FieldKind, FormField, PageNumOpts, Pos, ProtectOpts, SignOpts, SplitMode, WatermarkOpts, WmKind};
@@ -17,6 +19,12 @@ pub enum Tool {
     Rotate, AddPageNumbers, AddWatermark, Crop, EditPdf, PdfForms,
     Unlock, Protect, Sign, Redact, Compare,
     Summarizer, Translate, PdfToMarkdown,
+}
+
+const CAT_ICONS: [char; 7] = [icons::FOLDER, icons::TUNE, icons::FILE_UPLOAD, icons::FILE_DOWNLOAD, icons::EDIT_NOTE, icons::SHIELD, icons::AUTO_AWESOME];
+
+fn cat_of(t: Tool) -> usize {
+    CATS.iter().position(|(_, ts)| ts.contains(&t)).unwrap_or(0)
 }
 
 const CATS: &[(&str, &[Tool])] = &[
@@ -124,6 +132,64 @@ impl Tool {
             Split => ("split", ""), PdfToJpg => ("images", ""), Compare => ("", ""),
         }
     }
+    fn icon(self) -> char {
+        use Tool::*;
+        match self {
+            Merge => icons::MERGE_TYPE, Split => icons::CALL_SPLIT, RemovePages => icons::DELETE, ExtractPages => icons::OUTPUT,
+            Organize => icons::REORDER, ScanToPdf => icons::DOCUMENT_SCANNER, Compress => icons::COMPRESS, Repair => icons::BUILD,
+            Ocr => icons::FIND_IN_PAGE, JpgToPdf => icons::IMAGE, WordToPdf => icons::DESCRIPTION, PowerpointToPdf => icons::SLIDESHOW,
+            ExcelToPdf => icons::TABLE_CHART, HtmlToPdf => icons::HTML, PdfToJpg => icons::PHOTO_LIBRARY, PdfToWord => icons::ARTICLE,
+            PdfToPowerpoint => icons::PRESENT_TO_ALL, PdfToExcel => icons::GRID_ON, PdfToPdfa => icons::INVENTORY_2,
+            Rotate => icons::ROTATE_RIGHT, AddPageNumbers => icons::FORMAT_LIST_NUMBERED, AddWatermark => icons::BRANDING_WATERMARK,
+            Crop => icons::CROP, EditPdf => icons::EDIT, PdfForms => icons::DYNAMIC_FORM, Unlock => icons::LOCK_OPEN, Protect => icons::LOCK,
+            Sign => icons::DRAW, Redact => icons::VISIBILITY_OFF, Compare => icons::COMPARE, Summarizer => icons::AUTO_AWESOME,
+            Translate => icons::TRANSLATE, PdfToMarkdown => icons::CODE,
+        }
+    }
+    fn short(self) -> &'static str {
+        use Tool::*;
+        match self {
+            Merge => "Gabungkan beberapa PDF jadi satu",
+            Split => "Pecah PDF per rentang, per N halaman, atau per halaman",
+            RemovePages => "Hapus halaman yang tidak diperlukan",
+            ExtractPages => "Ambil halaman tertentu jadi PDF baru",
+            Organize => "Urutkan ulang, duplikasi, atau buang halaman",
+            ScanToPdf => "Pindai dari scanner atau foto dokumen",
+            Compress => "Perkecil ukuran file PDF",
+            Repair => "Pulihkan PDF yang rusak",
+            Ocr => "Jadikan PDF hasil scan bisa dicari dan disalin",
+            JpgToPdf => "Ubah gambar JPG/PNG menjadi PDF",
+            WordToPdf => "Konversi dokumen Word ke PDF",
+            PowerpointToPdf => "Konversi presentasi PowerPoint ke PDF",
+            ExcelToPdf => "Konversi spreadsheet Excel ke PDF",
+            HtmlToPdf => "Ubah halaman web atau file HTML ke PDF",
+            PdfToJpg => "Simpan halaman PDF sebagai gambar",
+            PdfToWord => "Ekstrak teks PDF ke dokumen Word",
+            PdfToPowerpoint => "Ubah halaman PDF menjadi slide",
+            PdfToExcel => "Ekstrak tabel PDF ke Excel",
+            PdfToPdfa => "Arsipkan sebagai PDF/A jangka panjang",
+            Rotate => "Putar halaman 90°, 180°, atau 270°",
+            AddPageNumbers => "Tambahkan nomor halaman",
+            AddWatermark => "Tambahkan watermark teks atau gambar",
+            Crop => "Potong margin halaman",
+            EditPdf => "Tambah teks, gambar, kotak, dan stabilo",
+            PdfForms => "Isi formulir PDF interaktif",
+            Unlock => "Hapus password dari PDF",
+            Protect => "Kunci PDF dengan password",
+            Sign => "Bubuhkan tanda tangan visual",
+            Redact => "Sensor teks atau area secara permanen",
+            Compare => "Bandingkan dua PDF: teks dan tampilan",
+            Summarizer => "Ringkas isi PDF dengan AI",
+            Translate => "Terjemahkan teks PDF dengan AI",
+            PdfToMarkdown => "Konversi PDF ke Markdown",
+        }
+    }
+    fn has_options(self) -> bool {
+        !matches!(
+            self,
+            Tool::Merge | Tool::Repair | Tool::Unlock | Tool::PdfToWord | Tool::PdfToExcel | Tool::PdfToMarkdown | Tool::WordToPdf | Tool::PowerpointToPdf | Tool::ExcelToPdf | Tool::HtmlToPdf
+        )
+    }
     fn is_folder_output(self) -> bool {
         matches!(self, Tool::Split | Tool::PdfToJpg)
     }
@@ -153,7 +219,23 @@ struct Preview {
     err: Option<String>,
 }
 
+struct Snack {
+    text: String,
+    kind: BannerKind,
+    at: std::time::Instant,
+}
+
 pub struct App {
+    // tampilan
+    dark: bool,
+    accent: Accent,
+    home: bool,
+    search: String,
+    nav_open: [bool; 7],
+    accent_open: bool,
+    accent_btn: Rect,
+    snack: Option<Snack>,
+    sizes: std::collections::HashMap<PathBuf, u64>,
     tool: Tool,
     files: Vec<PathBuf>,
     active: usize,
@@ -247,27 +329,23 @@ pub struct App {
     tr_fmt: usize,
 }
 
-fn setup_fonts(ctx: &egui::Context) {
-    let mut fonts = egui::FontDefinitions::default();
-    for p in [r"C:\Windows\Fonts\segoeui.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"] {
-        if let Ok(bytes) = std::fs::read(p) {
-            fonts.font_data.insert("ui".into(), egui::FontData::from_owned(bytes));
-            fonts.families.get_mut(&egui::FontFamily::Proportional).unwrap().insert(0, "ui".into());
-            break;
-        }
-    }
-    ctx.set_fonts(fonts);
-}
-
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, args: Vec<String>) -> Self {
-        setup_fonts(&cc.egui_ctx);
-        let mut style = (*cc.egui_ctx.style()).clone();
-        style.spacing.item_spacing = Vec2::new(8.0, 7.0);
-        style.spacing.button_padding = Vec2::new(10.0, 5.0);
-        cc.egui_ctx.set_style(style);
+        theme::install_fonts(&cc.egui_ctx);
+        let sys_dark = cc.egui_ctx.style().visuals.dark_mode;
+        let (accent, dark) = load_cfg(sys_dark);
+        theme::apply(&cc.egui_ctx, accent, dark);
         let (tx, rx) = channel();
         let mut app = Self {
+            dark,
+            accent,
+            home: true,
+            search: String::new(),
+            nav_open: [false; 7],
+            accent_open: false,
+            accent_btn: Rect::NOTHING,
+            snack: None,
+            sizes: Default::default(),
             tool: Tool::Merge,
             files: vec![],
             active: 0,
@@ -359,6 +437,7 @@ impl App {
         };
         // Argumen: [--tool NamaAlat] [file ...]  (mis. dari "Open with" di Windows)
         let mut files = Vec::new();
+        let mut args_tool = false;
         let mut it = args.into_iter();
         while let Some(a) = it.next() {
             if a == "--tool" {
@@ -366,6 +445,7 @@ impl App {
                     let n = n.to_lowercase().replace(['_', '-', ' '], "");
                     if let Some(t) = CATS.iter().flat_map(|(_, ts)| ts.iter()).find(|t| format!("{t:?}").to_lowercase() == n || t.label().to_lowercase().replace([' ', '/'], "") == n) {
                         app.tool = *t;
+                        args_tool = true;
                     }
                 }
             } else {
@@ -376,7 +456,12 @@ impl App {
             if app.tool == Tool::Merge && files.len() == 1 {
                 app.tool = Tool::EditPdf;
             }
+            app.home = false;
+            app.nav_open[cat_of(app.tool)] = true;
             app.add_files(files);
+        } else if args_tool {
+            app.home = false;
+            app.nav_open[cat_of(app.tool)] = true;
         }
         app
     }
@@ -384,6 +469,8 @@ impl App {
     // ───────── state helpers ─────────
 
     fn select_tool(&mut self, t: Tool) {
+        self.home = false;
+        self.nav_open[cat_of(t)] = true;
         if self.tool == t {
             return;
         }
@@ -403,7 +490,18 @@ impl App {
         if matches!(t.input(), Input::PdfOne | Input::PdfTwo) && self.files.len() > 1 {
             self.files.truncate(1);
         }
-        self.status = t.desc().into();
+    }
+
+    fn notify(&mut self, s: String) {
+        let kind = if s.starts_with('✖') {
+            BannerKind::Error
+        } else if s.starts_with('✔') {
+            BannerKind::Success
+        } else {
+            BannerKind::Info
+        };
+        let text = s.trim_start_matches(['✖', '✔', ' ']).to_string();
+        self.snack = Some(Snack { text, kind, at: std::time::Instant::now() });
     }
 
     fn ext_ok(&self, p: &Path) -> bool {
@@ -433,6 +531,11 @@ impl App {
         let ps: Vec<PathBuf> = ps.into_iter().filter(|p| self.ext_ok(p)).collect();
         if ps.is_empty() {
             return;
+        }
+        for p in &ps {
+            if let Ok(m) = std::fs::metadata(p) {
+                self.sizes.insert(p.clone(), m.len());
+            }
         }
         match self.tool.input() {
             Input::PdfMany | Input::Images => self.files.extend(ps),
@@ -534,8 +637,7 @@ impl App {
                 Msg::Progress(s) => self.status = s,
                 Msg::Done(Ok(o)) => {
                     self.busy = false;
-                    self.status = format!("✔ {}", o.msg);
-                    self.log.push(self.status.clone());
+                    self.notify(format!("✔ {}", o.msg));
                     self.outputs = o.outputs;
                     if let Some(t) = o.text {
                         self.result_text = t;
@@ -547,8 +649,7 @@ impl App {
                 }
                 Msg::Done(Err(e)) => {
                     self.busy = false;
-                    self.status = format!("✖ {e}");
-                    self.log.push(self.status.clone());
+                    self.notify(format!("✖ {e}"));
                 }
             }
         }
@@ -582,138 +683,174 @@ impl App {
     // ───────── UI pieces ─────────
 
     fn file_section(&mut self, ui: &mut egui::Ui) {
+        let p = theme::pal(ui.ctx());
         let input = self.tool.input();
         if input == Input::Html {
-            ui.label("Sumber HTML (URL atau file):");
+            ui.label("Alamat web (URL) atau file HTML lokal");
             ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut self.html_src).desired_width(380.0).hint_text("https://contoh.com  atau  C:\\path\\file.html"));
-                if ui.button("Pilih file…").clicked() {
-                    if let Some(p) = rfd::FileDialog::new().add_filter("HTML", &["html", "htm"]).pick_file() {
-                        self.html_src = p.display().to_string();
-                        self.files = vec![p];
+                ui.add(egui::TextEdit::singleline(&mut self.html_src).desired_width((ui.available_width() - 170.0).max(200.0)).hint_text("https://contoh.com  atau  C:\\path\\file.html"));
+                if theme::button(ui, Kind::Tonal, Some(icons::FOLDER_OPEN), "Pilih file").clicked() {
+                    if let Some(f) = rfd::FileDialog::new().add_filter("HTML", &["html", "htm"]).pick_file() {
+                        self.html_src = f.display().to_string();
+                        self.files = vec![f];
                     }
                 }
             });
             return;
         }
-        ui.horizontal(|ui| {
-            let multi = matches!(input, Input::PdfMany | Input::Images);
-            if ui.button(if multi { "➕ Tambah file…" } else { "📂 Pilih file…" }).clicked() {
+        let multi = matches!(input, Input::PdfMany | Input::Images);
+        let is_pdf = matches!(input, Input::PdfOne | Input::PdfMany | Input::PdfTwo);
+        let (kind_label, kind_icon) = match input {
+            Input::Images => ("JPG, PNG", icons::IMAGE),
+            Input::Word => ("DOC, DOCX, RTF, ODT", icons::DESCRIPTION),
+            Input::Ppt => ("PPT, PPTX, ODP", icons::SLIDESHOW),
+            Input::Excel => ("XLS, XLSX, CSV, ODS", icons::TABLE_CHART),
+            _ => ("PDF", icons::PICTURE_AS_PDF),
+        };
+        if self.files.is_empty() {
+            let w = ui.available_width();
+            let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 150.0), Sense::click());
+            if resp.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            let painter = ui.painter();
+            painter.rect_filled(rect, Rounding::same(14.0), if resp.hovered() { theme::alpha(p.primary, 28) } else { p.sc_lowest });
+            let r = rect.shrink(1.0);
+            let st = Stroke::new(1.5, if resp.hovered() { p.primary } else { p.outline });
+            for seg in [[r.left_top(), r.right_top()], [r.right_top(), r.right_bottom()], [r.right_bottom(), r.left_bottom()], [r.left_bottom(), r.left_top()]] {
+                painter.extend(egui::Shape::dashed_line(&seg, st, 8.0, 6.0));
+            }
+            theme::paint_icon(painter, Pos2::new(rect.center().x, rect.top() + 48.0), icons::UPLOAD_FILE, 44.0, p.primary);
+            painter.text(Pos2::new(rect.center().x, rect.top() + 88.0), Align2::CENTER_CENTER, if multi { "Seret file ke sini, atau klik untuk memilih" } else { "Seret file ke sini, atau klik untuk memilih" }, egui::FontId::proportional(15.5), p.on_surface);
+            painter.text(Pos2::new(rect.center().x, rect.top() + 112.0), Align2::CENTER_CENTER, format!("Format: {kind_label}{}", if multi { " · bisa banyak file" } else { "" }), egui::FontId::proportional(13.0), p.on_surface_variant);
+            if resp.clicked() {
                 self.pick_input("");
             }
-            if input == Input::Images && ui.button("🖨 Pindai (scanner)").clicked() && !self.busy {
-                match convert::scan_with_wia() {
-                    Ok(p) => self.files.push(p),
-                    Err(e) => self.status = format!("✖ {e}"),
+            if input == Input::Images {
+                ui.add_space(4.0);
+                if theme::button(ui, Kind::Outlined, Some(icons::DOCUMENT_SCANNER), "Pindai dari scanner").clicked() && !self.busy {
+                    match convert::scan_with_wia() {
+                        Ok(f) => {
+                            self.files.push(f);
+                            self.on_files_changed();
+                        }
+                        Err(e) => self.notify(format!("✖ {e}")),
+                    }
                 }
             }
-            if !self.files.is_empty() && ui.button("Kosongkan").clicked() {
-                self.files.clear();
+        } else {
+            let n = self.files.len();
+            let mut remove = None;
+            let mut swap = None;
+            let mut select = None;
+            egui::ScrollArea::vertical().max_height(236.0).auto_shrink([false, true]).id_salt("filelist").show(ui, |ui| {
+                for (i, f) in self.files.iter().enumerate() {
+                    let sel = i == self.active && n > 1;
+                    let w = ui.available_width();
+                    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 56.0), Sense::click());
+                    if resp.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    {
+                        let painter = ui.painter();
+                        painter.rect_filled(rect, Rounding::same(12.0), if sel { p.secondary_container } else { p.sc_lowest });
+                        if resp.hovered() {
+                            painter.rect_filled(rect, Rounding::same(12.0), theme::alpha(p.on_surface, 14));
+                        }
+                        painter.circle_filled(Pos2::new(rect.left() + 32.0, rect.center().y), 20.0, if sel { p.primary } else { p.primary_container });
+                        theme::paint_icon(painter, Pos2::new(rect.left() + 32.0, rect.center().y), kind_icon, 22.0, if sel { p.on_primary } else { p.on_primary_container });
+                        let name = f.file_name().and_then(|s| s.to_str()).unwrap_or("?");
+                        let sub = format!("{}{}", fmt_size(self.sizes.get(f).copied().unwrap_or(0)), f.parent().and_then(|d| d.file_name()).and_then(|d| d.to_str()).map(|d| format!("  ·  {d}")).unwrap_or_default());
+                        let tr = Rect::from_min_max(Pos2::new(rect.left() + 64.0, rect.top()), Pos2::new(rect.right() - if multi { 124.0 } else { 52.0 }, rect.bottom()));
+                        let pc = painter.with_clip_rect(tr);
+                        pc.text(Pos2::new(tr.left(), rect.center().y - 9.0), Align2::LEFT_CENTER, format!("{}. {name}", i + 1), egui::FontId::proportional(14.5), p.on_surface);
+                        pc.text(Pos2::new(tr.left(), rect.center().y + 10.0), Align2::LEFT_CENTER, sub, egui::FontId::proportional(12.0), p.on_surface_variant);
+                    }
+                    if resp.clicked() {
+                        select = Some(i);
+                    }
+                    let by = rect.center().y - 16.0;
+                    let mut x = rect.right() - 40.0;
+                    let del = ui.allocate_new_ui(egui::UiBuilder::new().max_rect(Rect::from_min_size(Pos2::new(x, by), Vec2::splat(32.0))), |ui| theme::icon_button_sm(ui, icons::CLOSE, "Hapus dari daftar", true)).inner;
+                    if del.clicked() {
+                        remove = Some(i);
+                    }
+                    if multi {
+                        x -= 36.0;
+                        let dn = ui.allocate_new_ui(egui::UiBuilder::new().max_rect(Rect::from_min_size(Pos2::new(x, by), Vec2::splat(32.0))), |ui| theme::icon_button_sm(ui, icons::ARROW_DOWNWARD, "Geser ke bawah", i + 1 < n)).inner;
+                        if dn.clicked() {
+                            swap = Some((i, i + 1));
+                        }
+                        x -= 36.0;
+                        let up = ui.allocate_new_ui(egui::UiBuilder::new().max_rect(Rect::from_min_size(Pos2::new(x, by), Vec2::splat(32.0))), |ui| theme::icon_button_sm(ui, icons::ARROW_UPWARD, "Geser ke atas", i > 0)).inner;
+                        if up.clicked() {
+                            swap = Some((i, i - 1));
+                        }
+                    }
+                    ui.add_space(2.0);
+                }
+            });
+            if let Some(i) = select {
+                self.active = i;
+                self.pv.key = None;
+            }
+            if let Some((a, b)) = swap {
+                self.files.swap(a, b);
+                self.active = b;
+            }
+            if let Some(i) = remove {
+                self.files.remove(i);
                 self.on_files_changed();
             }
-            if matches!(input, Input::PdfOne | Input::PdfMany | Input::PdfTwo) {
-                ui.label("Password:");
-                let r = ui.add(egui::TextEdit::singleline(&mut self.password).password(true).desired_width(110.0).hint_text("jika ada"));
-                if r.lost_focus() && r.changed() || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
-                    self.refresh_total();
+            ui.add_space(4.0);
+            ui.horizontal_wrapped(|ui| {
+                if theme::button(ui, Kind::Tonal, Some(if multi { icons::ADD } else { icons::FOLDER_OPEN }), if multi { "Tambah file" } else { "Ganti file" }).clicked() {
+                    self.pick_input("");
                 }
-            }
-        });
-        if self.files.is_empty() {
-            ui.weak("Belum ada file. Klik tombol di atas atau seret file ke jendela ini.");
-        }
-        let mut remove = None;
-        let mut swap = None;
-        let multi = matches!(input, Input::PdfMany | Input::Images);
-        let n = self.files.len();
-        if n > 1 {
-            ui.weak(format!("{n} file dipilih"));
-        }
-        egui::ScrollArea::vertical().max_height(170.0).auto_shrink([false, true]).id_salt("filelist").show(ui, |ui| {
-        for (i, f) in self.files.iter().enumerate() {
-            ui.horizontal(|ui| {
-                let name = f.file_name().and_then(|s| s.to_str()).unwrap_or("?");
-                let is_active = i == self.active;
-                if ui.selectable_label(is_active, format!("{}. {name}", i + 1)).on_hover_text(f.display().to_string()).clicked() {
-                    self.active = i;
-                    self.pv.key = None;
-                }
-                if multi {
-                    if ui.add_enabled(i > 0, egui::Button::new("▲").small()).clicked() {
-                        swap = Some((i, i - 1));
-                    }
-                    if ui.add_enabled(i + 1 < n, egui::Button::new("▼").small()).clicked() {
-                        swap = Some((i, i + 1));
+                if input == Input::Images && theme::button(ui, Kind::Outlined, Some(icons::DOCUMENT_SCANNER), "Pindai").clicked() && !self.busy {
+                    match convert::scan_with_wia() {
+                        Ok(f) => {
+                            self.files.push(f);
+                            self.on_files_changed();
+                        }
+                        Err(e) => self.notify(format!("✖ {e}")),
                     }
                 }
-                if ui.add(egui::Button::new("✕").small()).clicked() {
-                    remove = Some(i);
+                if !self.files.is_empty() && theme::button(ui, Kind::Text, Some(icons::DELETE), "Kosongkan").clicked() {
+                    self.files.clear();
+                    self.on_files_changed();
+                }
+                if self.total > 0 {
+                    ui.label(RichText::new(format!("{} file · {} halaman", n, self.total)).color(p.on_surface_variant));
+                } else if n > 1 {
+                    ui.label(RichText::new(format!("{n} file")).color(p.on_surface_variant));
                 }
             });
         }
-        });
-        if let Some((a, b)) = swap {
-            self.files.swap(a, b);
-            self.active = b;
-        }
-        if let Some(i) = remove {
-            self.files.remove(i);
-            self.on_files_changed();
-        }
-        if self.total > 0 {
-            ui.weak(format!("{} halaman", self.total));
-        }
-        if let Some(e) = &self.pv.err {
-            if self.total == 0 {
-                ui.colored_label(Color32::LIGHT_RED, e);
-            }
-        }
-    }
-
-    fn output_section(&mut self, ui: &mut egui::Ui) {
-        if self.tool == Tool::Compare {
-            return;
-        }
-        let Some(p) = self.out_path() else { return };
-        ui.separator();
-        ui.horizontal_wrapped(|ui| {
-            ui.label(if self.tool.is_folder_output() { "Folder hasil:" } else { "Simpan ke:" });
-            ui.monospace(p.display().to_string());
-            if ui.button("Ubah…").clicked() {
-                if self.tool.is_folder_output() {
-                    if let Some(d) = rfd::FileDialog::new().pick_folder() {
-                        self.out_override = Some(d);
-                    }
-                } else {
-                    let (_, ext) = self.tool.out_spec();
-                    let ext = if self.tool == Tool::Translate { ["docx", "md", "txt"][self.tr_fmt.min(2)] } else { ext };
-                    let mut d = rfd::FileDialog::new().add_filter(ext, &[ext]);
-                    if let Some(n) = p.file_name().and_then(|s| s.to_str()) {
-                        d = d.set_file_name(n);
-                    }
-                    if let Some(f) = d.save_file() {
-                        self.out_override = Some(f);
-                    }
+        if is_pdf {
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                theme::icon(ui, icons::LOCK, 20.0, p.on_surface_variant);
+                let r = ui.add(egui::TextEdit::singleline(&mut self.password).password(true).desired_width(220.0).hint_text("Password PDF (jika ada)"));
+                if r.lost_focus() && (r.changed() || ui.input(|i| i.key_pressed(egui::Key::Enter))) {
+                    self.refresh_total();
                 }
+            });
+        }
+        if let Some(e) = self.pv.err.clone() {
+            if self.total == 0 && !self.files.is_empty() {
+                ui.add_space(4.0);
+                theme::banner(ui, icons::ERROR, &e, BannerKind::Error);
             }
-        });
+        }
     }
 
-    fn run_button(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, label: &str) {
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            let ready = !self.busy;
-            if ui.add_enabled(ready, egui::Button::new(RichText::new(label).strong().size(15.0)).min_size(Vec2::new(160.0, 34.0))).clicked() {
-                self.run(ctx);
-            }
-            if self.busy {
-                ui.spinner();
-            }
-        });
-    }
+
+
+
 
     fn pages_row(&mut self, ui: &mut egui::Ui, hint: &str) {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label("Halaman:");
             ui.add(egui::TextEdit::singleline(&mut self.pages_spec).desired_width(200.0).hint_text(hint));
             ui.weak("(kosong = semua) contoh: 1-3,5,8-");
@@ -721,9 +858,9 @@ impl App {
     }
 
     fn pick_image_row(ui: &mut egui::Ui, label: &str, slot: &mut Option<PathBuf>) {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(label);
-            if ui.button("Pilih gambar…").clicked() {
+            if theme::button_sm(ui, Kind::Tonal, Some(icons::IMAGE), "Pilih gambar").clicked() {
                 if let Some(p) = rfd::FileDialog::new().add_filter("Gambar", &["png", "jpg", "jpeg"]).pick_file() {
                     *slot = Some(p);
                 }
@@ -731,7 +868,7 @@ impl App {
             match slot {
                 Some(p) => {
                     ui.monospace(p.file_name().and_then(|s| s.to_str()).unwrap_or("?"));
-                    if ui.small_button("✕").clicked() {
+                    if theme::icon_button_sm(ui, icons::CLOSE, "Hapus", true).clicked() {
                         *slot = None;
                     }
                 }
@@ -756,30 +893,25 @@ impl App {
         }
     }
 
-    fn tool_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.heading(self.tool.label());
-        ui.label(self.tool.desc());
-        ui.separator();
-        self.file_section(ui);
-        ui.add_space(4.0);
+    fn options_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let t = self.tool;
         match t {
             Tool::Merge | Tool::Repair | Tool::Unlock | Tool::PdfToWord | Tool::PdfToExcel | Tool::PdfToMarkdown => {}
             Tool::Split => {
-                ui.horizontal(|ui| {
-                    ui.radio_value(&mut self.split_mode, 0, "Rentang");
-                    ui.radio_value(&mut self.split_mode, 1, "Setiap N halaman");
-                    ui.radio_value(&mut self.split_mode, 2, "Satu halaman per file");
+                ui.horizontal_wrapped(|ui| {
+                    theme::choice(ui, &mut self.split_mode, 0, "Rentang");
+                    theme::choice(ui, &mut self.split_mode, 1, "Setiap N halaman");
+                    theme::choice(ui, &mut self.split_mode, 2, "Satu halaman per file");
                 });
                 match self.split_mode {
                     0 => {
-                        ui.horizontal(|ui| {
+                        ui.horizontal_wrapped(|ui| {
                             ui.label("Rentang (pisahkan dengan koma, tiap rentang = 1 file):");
                             ui.add(egui::TextEdit::singleline(&mut self.split_spec).desired_width(180.0));
                         });
                     }
                     1 => {
-                        ui.horizontal(|ui| {
+                        ui.horizontal_wrapped(|ui| {
                             ui.label("N =");
                             ui.add(egui::DragValue::new(&mut self.split_n).range(1..=10_000));
                         });
@@ -792,24 +924,24 @@ impl App {
             Tool::Organize => {
                 ui.label("Urutan halaman baru (boleh duplikat / dikurangi):");
                 ui.add(egui::TextEdit::singleline(&mut self.organize_order).desired_width(420.0));
-                ui.horizontal(|ui| {
-                    if ui.button("Reset").clicked() {
+                ui.horizontal_wrapped(|ui| {
+                    if theme::button_sm(ui, Kind::Tonal, Some(icons::REFRESH), "Reset").clicked() {
                         self.organize_order = (1..=self.total).map(|n| n.to_string()).collect::<Vec<_>>().join(",");
                     }
-                    if ui.button("Balik urutan").clicked() {
+                    if theme::button_sm(ui, Kind::Tonal, Some(icons::ARROW_DOWNWARD), "Balik urutan").clicked() {
                         self.organize_order = (1..=self.total).rev().map(|n| n.to_string()).collect::<Vec<_>>().join(",");
                     }
                 });
             }
             Tool::ScanToPdf | Tool::JpgToPdf => {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label("Ukuran halaman:");
-                    ui.radio_value(&mut self.img_mode, 0, "Sesuai gambar");
-                    ui.radio_value(&mut self.img_mode, 1, "A4 tegak");
-                    ui.radio_value(&mut self.img_mode, 2, "A4 mendatar");
+                    theme::choice(ui, &mut self.img_mode, 0, "Sesuai gambar");
+                    theme::choice(ui, &mut self.img_mode, 1, "A4 tegak");
+                    theme::choice(ui, &mut self.img_mode, 2, "A4 mendatar");
                 });
                 if self.img_mode != 0 {
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.label("Margin (pt):");
                         ui.add(egui::DragValue::new(&mut self.img_margin).range(0.0..=100.0));
                     });
@@ -818,28 +950,28 @@ impl App {
                     self.img_enhance = true;
                     ui.weak("Mode pindaian aktif: abu-abu + kontras otomatis.");
                 } else {
-                    ui.checkbox(&mut self.img_enhance, "Perbaiki kontras gaya scan (abu-abu)");
+                    theme::switch(ui, &mut self.img_enhance, "Perbaiki kontras gaya scan (abu-abu)");
                 }
             }
             Tool::Compress => {
-                ui.horizontal(|ui| {
-                    ui.radio_value(&mut self.compress_level, 0, "Ringan (kualitas terjaga)");
-                    ui.radio_value(&mut self.compress_level, 1, "Sedang");
-                    ui.radio_value(&mut self.compress_level, 2, "Maksimal (gambar diperkecil)");
+                ui.horizontal_wrapped(|ui| {
+                    theme::choice(ui, &mut self.compress_level, 0, "Ringan (kualitas terjaga)");
+                    theme::choice(ui, &mut self.compress_level, 1, "Sedang");
+                    theme::choice(ui, &mut self.compress_level, 2, "Maksimal (gambar diperkecil)");
                 });
             }
             Tool::Ocr => {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label("Bahasa Tesseract:");
                     ui.add(egui::TextEdit::singleline(&mut self.ocr_lang).desired_width(110.0));
                     ui.weak("mis. eng, ind, eng+ind");
                 });
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label("DPI render:");
                     ui.add(egui::DragValue::new(&mut self.ocr_dpi).range(100.0..=600.0));
                 });
                 if render::find_tesseract(&self.tesseract_path).is_none() {
-                    ui.colored_label(Color32::YELLOW, "Tesseract belum ditemukan. Pasang: winget install UB-Mannheim.TesseractOCR (atau isi path di ⚙ Pengaturan).");
+                    theme::banner(ui, icons::WARNING, "Tesseract belum ditemukan. Pasang Tesseract OCR (installer UB-Mannheim) atau isi path-nya di Pengaturan.", BannerKind::Warn);
                 }
             }
             Tool::WordToPdf | Tool::PowerpointToPdf | Tool::ExcelToPdf => {
@@ -848,9 +980,9 @@ impl App {
             Tool::HtmlToPdf => {}
             Tool::PdfToJpg => {
                 self.pages_row(ui, "semua");
-                ui.horizontal(|ui| {
-                    ui.radio_value(&mut self.jpg_png, false, "JPG");
-                    ui.radio_value(&mut self.jpg_png, true, "PNG");
+                ui.horizontal_wrapped(|ui| {
+                    theme::choice(ui, &mut self.jpg_png, false, "JPG");
+                    theme::choice(ui, &mut self.jpg_png, true, "PNG");
                     ui.label("DPI:");
                     ui.add(egui::DragValue::new(&mut self.jpg_dpi).range(36.0..=600.0));
                     if !self.jpg_png {
@@ -860,51 +992,49 @@ impl App {
                 });
             }
             Tool::PdfToPowerpoint => {
-                ui.horizontal(|ui| {
-                    ui.radio_value(&mut self.ppt_editable, false, "Gambar per halaman (tampilan identik)");
-                    ui.radio_value(&mut self.ppt_editable, true, "Teks yang bisa diedit");
+                ui.horizontal_wrapped(|ui| {
+                    theme::choice(ui, &mut self.ppt_editable, false, "Gambar per halaman (tampilan identik)");
+                    theme::choice(ui, &mut self.ppt_editable, true, "Teks yang bisa diedit");
                 });
                 if !self.ppt_editable {
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.label("DPI gambar:");
                         ui.add(egui::DragValue::new(&mut self.ppt_dpi).range(72.0..=300.0));
                     });
                 }
             }
             Tool::PdfToPdfa => {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label("Level PDF/A:");
-                    ui.radio_value(&mut self.pdfa_level, 1, "1");
-                    ui.radio_value(&mut self.pdfa_level, 2, "2");
-                    ui.radio_value(&mut self.pdfa_level, 3, "3");
+                    theme::choice(ui, &mut self.pdfa_level, 1, "1");
+                    theme::choice(ui, &mut self.pdfa_level, 2, "2");
+                    theme::choice(ui, &mut self.pdfa_level, 3, "3");
                 });
                 ui.weak("Memakai Ghostscript (winget install ArtifexSoftware.GhostScript). Validasi hasilnya dengan veraPDF bila untuk arsip resmi.");
             }
             Tool::Rotate => {
                 self.pages_row(ui, "semua");
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label("Putar:");
-                    ui.radio_value(&mut self.rotate_deg, 90, "90° ⟳");
-                    ui.radio_value(&mut self.rotate_deg, 180, "180°");
-                    ui.radio_value(&mut self.rotate_deg, 270, "90° ⟲");
+                    theme::choice(ui, &mut self.rotate_deg, 90, "90° ⟳");
+                    theme::choice(ui, &mut self.rotate_deg, 180, "180°");
+                    theme::choice(ui, &mut self.rotate_deg, 270, "90° ⟲");
                 });
             }
             Tool::AddPageNumbers => {
                 self.pages_row(ui, "semua");
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label("Format:");
                     ui.add(egui::TextEdit::singleline(&mut self.pn_format).desired_width(200.0));
                     ui.weak("{n} = nomor, {total} = jumlah");
                 });
-                ui.horizontal(|ui| {
-                    ui.label("Posisi:");
-                    egui::ComboBox::from_id_salt("pnpos")
-                        .selected_text(pos_label(self.pn_pos))
-                        .show_ui(ui, |ui| {
-                            for p in [Pos::TopLeft, Pos::TopCenter, Pos::TopRight, Pos::BottomLeft, Pos::BottomCenter, Pos::BottomRight] {
-                                ui.selectable_value(&mut self.pn_pos, p, pos_label(p));
-                            }
-                        });
+                ui.label("Posisi nomor:");
+                ui.horizontal_wrapped(|ui| {
+                    for p in [Pos::TopLeft, Pos::TopCenter, Pos::TopRight, Pos::BottomLeft, Pos::BottomCenter, Pos::BottomRight] {
+                        theme::choice(ui, &mut self.pn_pos, p, pos_label(p));
+                    }
+                });
+                ui.horizontal_wrapped(|ui| {
                     ui.label("Ukuran:");
                     ui.add(egui::DragValue::new(&mut self.pn_size).range(6.0..=48.0));
                     ui.label("Margin:");
@@ -915,18 +1045,18 @@ impl App {
             }
             Tool::AddWatermark => {
                 self.pages_row(ui, "semua");
-                ui.horizontal(|ui| {
-                    ui.radio_value(&mut self.wm_image, false, "Teks");
-                    ui.radio_value(&mut self.wm_image, true, "Gambar");
+                ui.horizontal_wrapped(|ui| {
+                    theme::choice(ui, &mut self.wm_image, false, "Teks");
+                    theme::choice(ui, &mut self.wm_image, true, "Gambar");
                 });
                 if self.wm_image {
                     Self::pick_image_row(ui, "Gambar:", &mut self.wm_img);
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.label("Lebar relatif:");
                         ui.add(egui::Slider::new(&mut self.wm_scale, 0.1..=1.0));
                     });
                 } else {
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.label("Teks:");
                         ui.add(egui::TextEdit::singleline(&mut self.wm_text).desired_width(220.0));
                         ui.label("Ukuran:");
@@ -934,7 +1064,7 @@ impl App {
                         ui.color_edit_button_srgb(&mut self.wm_color);
                     });
                 }
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label("Transparansi:");
                     ui.add(egui::Slider::new(&mut self.wm_opacity, 0.05..=1.0));
                     ui.label("Sudut:");
@@ -944,7 +1074,7 @@ impl App {
             Tool::Crop => {
                 self.pages_row(ui, "semua");
                 ui.label("Margin yang dibuang (pt, dihitung dari tampilan):");
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label("Kiri");
                     ui.add(egui::DragValue::new(&mut self.crop[0]).range(0.0..=2000.0));
                     ui.label("Bawah");
@@ -955,7 +1085,7 @@ impl App {
                     ui.add(egui::DragValue::new(&mut self.crop[3]).range(0.0..=2000.0));
                 });
                 self.sel_info(ui);
-                if ui.add_enabled(self.sel.is_some(), egui::Button::new("Pakai seleksi sebagai area yang dipertahankan")).clicked() {
+                if theme::button_en(ui, Kind::Tonal, Some(icons::CROP), "Pakai seleksi sebagai area yang dipertahankan", self.sel.is_some()).clicked() {
                     if let Some(r) = self.sel {
                         let (w, h) = self.pv.size_pt;
                         self.crop = [r[0], r[1], (w - r[2]).max(0.0), (h - r[3]).max(0.0)];
@@ -965,43 +1095,43 @@ impl App {
             Tool::EditPdf => self.edit_ui(ui),
             Tool::PdfForms => self.forms_ui(ui),
             Tool::Protect => {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label("Password buka:");
                     ui.add(egui::TextEdit::singleline(&mut self.prot_user).password(true).desired_width(160.0));
                     ui.label("Password pemilik:");
                     ui.add(egui::TextEdit::singleline(&mut self.prot_owner).password(true).desired_width(160.0));
                 });
-                ui.horizontal(|ui| {
-                    ui.checkbox(&mut self.prot_print, "Boleh cetak");
-                    ui.checkbox(&mut self.prot_copy, "Boleh salin teks");
-                    ui.checkbox(&mut self.prot_modify, "Boleh ubah");
-                    ui.checkbox(&mut self.prot_annot, "Boleh anotasi/isi form");
+                ui.horizontal_wrapped(|ui| {
+                    theme::switch(ui, &mut self.prot_print, "Boleh cetak");
+                    theme::switch(ui, &mut self.prot_copy, "Boleh salin teks");
+                    theme::switch(ui, &mut self.prot_modify, "Boleh ubah");
+                    theme::switch(ui, &mut self.prot_annot, "Boleh anotasi/isi form");
                 });
                 ui.weak("Enkripsi AES-128. Jangan lupa password — tidak ada cara memulihkannya.");
             }
             Tool::Sign => {
                 Self::pick_image_row(ui, "Gambar tanda tangan (opsional, PNG transparan terbaik):", &mut self.sign_img);
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label("Nama:");
                     ui.add(egui::TextEdit::singleline(&mut self.sign_name).desired_width(180.0));
                     ui.label("Alasan:");
                     ui.add(egui::TextEdit::singleline(&mut self.sign_reason).desired_width(180.0));
                 });
-                ui.horizontal(|ui| {
-                    ui.checkbox(&mut self.sign_date, "Sertakan tanggal");
-                    ui.checkbox(&mut self.sign_border, "Bingkai");
+                ui.horizontal_wrapped(|ui| {
+                    theme::switch(ui, &mut self.sign_date, "Sertakan tanggal");
+                    theme::switch(ui, &mut self.sign_border, "Bingkai");
                 });
                 self.sel_info(ui);
                 ui.weak("Seret kotak di preview pada halaman tujuan sebagai tempat tanda tangan.");
             }
             Tool::Redact => {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label("Sensor teks (pisahkan dengan ;):");
                     ui.add(egui::TextEdit::singleline(&mut self.redact_terms).desired_width(260.0).hint_text("mis. 12345; rahasia"));
                 });
                 self.sel_info(ui);
-                ui.horizontal(|ui| {
-                    if ui.add_enabled(self.sel.is_some(), egui::Button::new("＋ Tambah area dari seleksi")).clicked() {
+                ui.horizontal_wrapped(|ui| {
+                    if theme::button_en(ui, Kind::Tonal, Some(icons::ADD), "Tambah area dari seleksi", self.sel.is_some()).clicked() {
                         if let Some(r) = self.sel.take() {
                             self.redact_rects.push((self.page, r));
                         }
@@ -1011,9 +1141,9 @@ impl App {
                 });
                 let mut rm = None;
                 for (i, (p, r)) in self.redact_rects.iter().enumerate() {
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         ui.label(format!("Hal {p}: {:.0},{:.0} – {:.0},{:.0}", r[0], r[1], r[2], r[3]));
-                        if ui.small_button("✕").clicked() {
+                        if theme::icon_button_sm(ui, icons::CLOSE, "Hapus", true).clicked() {
                             rm = Some(i);
                         }
                     });
@@ -1021,31 +1151,29 @@ impl App {
                 if let Some(i) = rm {
                     self.redact_rects.remove(i);
                 }
-                ui.colored_label(Color32::YELLOW, "Halaman yang disensor menjadi gambar (teks asli dihapus permanen). Simpan sebagai file baru.");
+                theme::banner(ui, icons::WARNING, "Halaman yang disensor menjadi gambar (teks asli dihapus permanen). Simpan sebagai file baru.", BannerKind::Warn);
             }
             Tool::Compare => self.compare_ui(ui, ctx),
             Tool::Summarizer => {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label("Bahasa ringkasan:");
                     ui.add(egui::TextEdit::singleline(&mut self.ai_lang).desired_width(160.0));
+                });
+                ui.horizontal_wrapped(|ui| {
                     ui.label("Gaya:");
-                    egui::ComboBox::from_id_salt("aistyle")
-                        .selected_text(["Singkat (1 paragraf)", "Poin-poin", "Detail per bagian"][self.ai_style.min(2)])
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.ai_style, 0, "Singkat (1 paragraf)");
-                            ui.selectable_value(&mut self.ai_style, 1, "Poin-poin");
-                            ui.selectable_value(&mut self.ai_style, 2, "Detail per bagian");
-                        });
+                    theme::choice(ui, &mut self.ai_style, 0, "Singkat");
+                    theme::choice(ui, &mut self.ai_style, 1, "Poin-poin");
+                    theme::choice(ui, &mut self.ai_style, 2, "Detail per bagian");
                 });
                 self.api_note(ui);
             }
             Tool::Translate => {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label("Terjemahkan ke:");
                     ui.add(egui::TextEdit::singleline(&mut self.tr_target).desired_width(160.0));
                     ui.label("Format:");
                     for (i, n) in ["DOCX", "Markdown", "TXT"].iter().enumerate() {
-                        if ui.radio_value(&mut self.tr_fmt, i, *n).clicked() {
+                        if theme::choice(ui, &mut self.tr_fmt, i, *n).clicked() {
                             self.out_override = None;
                         }
                     }
@@ -1053,38 +1181,112 @@ impl App {
                 self.api_note(ui);
             }
         }
-        self.result_ui(ui);
     }
 
-    /// Bilah bawah tetap: lokasi simpan + tombol proses (selalu terlihat, berapa pun jumlah file).
+    fn tool_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let p = theme::pal(ctx);
+        let t = self.tool;
+        ui.horizontal(|ui| {
+            theme::icon_badge(ui, t.icon(), 56.0, p.primary_container, p.on_primary_container);
+            ui.add_space(4.0);
+            ui.vertical(|ui| {
+                ui.label(theme::headline(t.label()));
+                ui.add(egui::Label::new(RichText::new(t.desc()).color(p.on_surface_variant)).wrap());
+            });
+        });
+        ui.add_space(10.0);
+        theme::step_header(ui, 1, if t == Tool::Compare { "Dokumen pertama" } else { "Pilih file" });
+        theme::card(ui, CardKind::Filled, |ui| self.file_section(ui));
+        ui.add_space(10.0);
+        if t.has_options() {
+            theme::step_header(ui, 2, match t {
+                Tool::Compare => "Bandingkan dengan dokumen kedua",
+                Tool::Summarizer | Tool::Translate => "Pengaturan AI",
+                _ => "Atur opsi",
+            });
+            theme::card(ui, CardKind::Filled, |ui| self.options_ui(ui, ctx));
+        } else {
+            match t {
+                Tool::WordToPdf | Tool::PowerpointToPdf | Tool::ExcelToPdf => theme::banner(ui, icons::INFO, "Memakai Microsoft Office jika terpasang, jika tidak memakai LibreOffice.", BannerKind::Info),
+                Tool::Unlock => theme::banner(ui, icons::INFO, "Isi password PDF pada kolom password di atas, lalu tekan Proses.", BannerKind::Info),
+                Tool::PdfToWord | Tool::PdfToExcel | Tool::PdfToMarkdown => theme::banner(ui, icons::INFO, "PDF hasil scan (berupa gambar) perlu di-OCR dulu agar teksnya terbaca.", BannerKind::Info),
+                _ => {}
+            }
+        }
+        self.result_ui(ui);
+        ui.add_space(24.0);
+    }
+
+    /// Bilah bawah tetap: lokasi simpan + tombol aksi utama (selalu terlihat).
     fn run_bar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        self.output_section(ui);
+        let p = theme::pal(ctx);
+        if self.busy {
+            theme::progress_indeterminate(ui, ui.available_width());
+        } else {
+            ui.add_space(4.0);
+        }
         let label = match self.tool {
             Tool::Summarizer => "Ringkas",
             Tool::Translate => "Terjemahkan",
             Tool::PdfForms => "Isi form & simpan",
             _ => "Proses",
         };
-        self.run_button(ui, ctx, label);
-        ui.add_space(2.0);
+        let out = self.out_path();
+        ui.horizontal(|ui| {
+            let fab_w = 190.0;
+            let left_w = (ui.available_width() - fab_w - 12.0).max(120.0);
+            ui.allocate_ui_with_layout(Vec2::new(left_w, 56.0), Layout::left_to_right(Align::Center), |ui| {
+                if let Some(path) = &out {
+                    theme::icon_badge(ui, if self.tool.is_folder_output() { icons::FOLDER_OPEN } else { icons::SAVE }, 40.0, p.secondary_container, p.on_secondary_container);
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        ui.label(theme::label_small(if self.tool.is_folder_output() { "Folder hasil" } else { "Simpan ke" }).color(p.on_surface_variant));
+                        ui.add(egui::Label::new(RichText::new(path.display().to_string()).size(13.0)).truncate());
+                    });
+                    if theme::button_sm(ui, Kind::Text, None, "Ubah").clicked() {
+                        if self.tool.is_folder_output() {
+                            if let Some(d) = rfd::FileDialog::new().pick_folder() {
+                                self.out_override = Some(d);
+                            }
+                        } else {
+                            let (_, ext) = self.tool.out_spec();
+                            let ext = if self.tool == Tool::Translate { ["docx", "md", "txt"][self.tr_fmt.min(2)] } else { ext };
+                            let mut d = rfd::FileDialog::new().add_filter(ext, &[ext]);
+                            if let Some(n) = path.file_name().and_then(|s| s.to_str()) {
+                                d = d.set_file_name(n);
+                            }
+                            if let Some(f) = d.save_file() {
+                                self.out_override = Some(f);
+                            }
+                        }
+                    }
+                }
+            });
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if theme::fab(ui, if self.busy { icons::REFRESH } else { icons::PLAY_ARROW }, if self.busy { "Memproses…" } else { label }, !self.busy).clicked() {
+                    self.run(ctx);
+                }
+            });
+        });
+        ui.add_space(6.0);
     }
 
     fn api_note(&self, ui: &mut egui::Ui) {
         if self.api_key.trim().is_empty() {
-            ui.colored_label(Color32::YELLOW, "Isi API key Anthropic di ⚙ Pengaturan (atau env ANTHROPIC_API_KEY).");
+            theme::banner(ui, icons::WARNING, "Isi API key Anthropic di Pengaturan (ikon roda gigi) atau lewat variabel lingkungan ANTHROPIC_API_KEY.", BannerKind::Warn);
         } else {
             ui.weak("Teks dokumen dikirim ke API Anthropic untuk diproses.");
         }
     }
 
     fn edit_ui(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             for (i, n) in ["Teks", "Kotak putih (whiteout)", "Stabilo", "Gambar"].iter().enumerate() {
-                ui.radio_value(&mut self.edit_action, i, *n);
+                theme::choice(ui, &mut self.edit_action, i, *n);
             }
         });
         if self.edit_action == 0 {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label("Teks:");
                 ui.add(egui::TextEdit::multiline(&mut self.edit_text).desired_rows(2).desired_width(300.0));
                 ui.label("Ukuran:");
@@ -1102,7 +1304,7 @@ impl App {
             3 => self.sel.is_some() && self.edit_img.is_some(),
             _ => self.sel.is_some(),
         };
-        if ui.add_enabled(can, egui::Button::new(format!("＋ Tambahkan ke halaman {page}"))).clicked() {
+        if theme::button_en(ui, Kind::Tonal, Some(icons::ADD), &format!("Tambahkan ke halaman {page}"), can).clicked() {
             let item = match self.edit_action {
                 0 => self.pt.map(|(x, y)| EditItem::Text { page, x, y, size: self.edit_size, color: self.edit_color, text: self.edit_text.clone() }),
                 1 => self.sel.map(|r| EditItem::Rect { page, rect: r, color: [255, 255, 255], opacity: 1.0, multiply: false }),
@@ -1116,9 +1318,9 @@ impl App {
         }
         let mut rm = None;
         for (i, it) in self.edit_items.iter().enumerate() {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(it.describe());
-                if ui.small_button("✕").clicked() {
+                if theme::icon_button_sm(ui, icons::CLOSE, "Hapus", true).clicked() {
                     rm = Some(i);
                 }
             });
@@ -1130,7 +1332,7 @@ impl App {
     }
 
     fn forms_ui(&mut self, ui: &mut egui::Ui) {
-        if ui.button("🔍 Baca kolom form").clicked() {
+        if theme::button(ui, Kind::Tonal, Some(icons::SEARCH), "Baca kolom form").clicked() {
             if let Some(f) = self.files.get(self.active) {
                 match pdfops::read_fields(f, &self.password) {
                     Ok(v) => {
@@ -1141,10 +1343,10 @@ impl App {
                                 _ => f.value.clone(),
                             })
                             .collect();
-                        self.status = format!("{} kolom form ditemukan", v.len());
+                        self.notify(format!("{} kolom form ditemukan", v.len()));
                         self.forms = v;
                     }
-                    Err(e) => self.status = format!("✖ {e}"),
+                    Err(e) => self.notify(format!("✖ {e}")),
                 }
             }
         }
@@ -1159,7 +1361,7 @@ impl App {
                 match f.kind {
                     FieldKind::Checkbox | FieldKind::Radio => {
                         let mut b = self.form_vals[i] == "true";
-                        if ui.checkbox(&mut b, "").changed() {
+                        if theme::switch(ui, &mut b, "").changed() {
                             self.form_vals[i] = b.to_string();
                         }
                     }
@@ -1180,13 +1382,14 @@ impl App {
                 ui.end_row();
             }
         });
-        ui.checkbox(&mut self.form_lock, "Kunci kolom setelah diisi (read-only)");
+        theme::switch(ui, &mut self.form_lock, "Kunci kolom setelah diisi (read-only)");
     }
 
     fn compare_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.horizontal(|ui| {
+        let pp = theme::pal(ctx);
+        ui.horizontal_wrapped(|ui| {
             ui.label("Dokumen B:");
-            if ui.button("Pilih PDF B…").clicked() {
+            if theme::button(ui, Kind::Tonal, Some(icons::FOLDER_OPEN), "Pilih PDF B").clicked() {
                 if let Some(p) = rfd::FileDialog::new().add_filter("PDF", &["pdf"]).pick_file() {
                     self.cmp_b = Some(p);
                 }
@@ -1204,8 +1407,8 @@ impl App {
         });
         ui.label("Dokumen A = file yang dipilih di atas.");
         let ready = !self.busy && !self.files.is_empty() && self.cmp_b.is_some();
-        ui.horizontal(|ui| {
-            if ui.add_enabled(ready, egui::Button::new(RichText::new("Bandingkan").strong()).min_size(Vec2::new(140.0, 32.0))).clicked() {
+        ui.horizontal_wrapped(|ui| {
+            if theme::button_en(ui, Kind::Filled, Some(icons::COMPARE), "Bandingkan", ready).clicked() {
                 let (a, b, pa, pb) = (self.files[0].clone(), self.cmp_b.clone().unwrap(), self.password.clone(), self.cmp_pw.clone());
                 self.spawn(ctx, move |progress| {
                     let r = render::compare(&a, &b, &pa, &pb, progress)?;
@@ -1224,12 +1427,12 @@ impl App {
                 ui.label("Perbedaan visual per halaman:");
                 ui.horizontal_wrapped(|ui| {
                     for (p, pct) in &r.visual {
-                        let c = if *pct < 0.05 { Color32::LIGHT_GREEN } else { Color32::from_rgb(255, 170, 80) };
+                        let c = if *pct < 0.05 { pp.success } else { pp.error };
                         ui.colored_label(c, format!("Hal {p}: {pct:.2}%"));
                     }
                 });
             }
-            ui.checkbox(&mut self.cmp_show_equal, "Tampilkan baris yang sama");
+            theme::switch(ui, &mut self.cmp_show_equal, "Tampilkan baris yang sama");
             let show_eq = self.cmp_show_equal;
             let mut report = String::new();
             for l in &r.lines {
@@ -1241,18 +1444,18 @@ impl App {
                         continue;
                     }
                     let (c, pre) = match l.tag {
-                        '+' => (Color32::LIGHT_GREEN, "+ "),
-                        '-' => (Color32::LIGHT_RED, "− "),
-                        _ => (Color32::GRAY, "  "),
+                        '+' => (pp.success, "+ "),
+                        '-' => (pp.error, "− "),
+                        _ => (pp.on_surface_variant, "  "),
                     };
                     ui.label(RichText::new(format!("{pre}[{}] {}", l.page, l.text)).color(c).monospace());
                 }
             });
-            ui.horizontal(|ui| {
-                if ui.button("Salin laporan").clicked() {
+            ui.horizontal_wrapped(|ui| {
+                if theme::button_sm(ui, Kind::Tonal, Some(icons::CONTENT_COPY), "Salin laporan").clicked() {
                     ctx.copy_text(report.clone());
                 }
-                if ui.button("Simpan laporan .txt…").clicked() {
+                if theme::button_sm(ui, Kind::Tonal, Some(icons::SAVE), "Simpan laporan .txt").clicked() {
                     if let Some(p) = rfd::FileDialog::new().set_file_name("perbandingan.txt").save_file() {
                         let _ = std::fs::write(p, report);
                     }
@@ -1263,37 +1466,51 @@ impl App {
     }
 
     fn result_ui(&mut self, ui: &mut egui::Ui) {
+        let p = theme::pal(ui.ctx());
         if !self.outputs.is_empty() {
-            ui.separator();
+            ui.add_space(6.0);
             let outs = self.outputs.clone();
-            for o in &outs {
+            theme::card(ui, CardKind::Success, |ui| {
                 ui.horizontal(|ui| {
-                    ui.monospace(o.display().to_string());
-                    if ui.small_button("Buka").clicked() {
-                        util::open_in_shell(o);
-                    }
-                    if ui.small_button("Tampilkan di folder").clicked() {
-                        util::reveal_in_shell(o);
-                    }
-                    if o.extension().and_then(|e| e.to_str()) == Some("pdf") && ui.small_button("Pakai sebagai input").clicked() {
-                        self.files = vec![o.clone()];
-                        self.out_override = None;
-                        self.on_files_changed();
-                    }
+                    theme::icon(ui, icons::CHECK_CIRCLE, 26.0, p.on_success_container);
+                    ui.label(RichText::new("Selesai").size(17.0).strong().color(p.on_success_container));
                 });
-            }
-        }
-        if !self.result_text.is_empty() {
-            ui.separator();
-            ui.horizontal(|ui| {
-                ui.label("Hasil:");
-                if ui.small_button("Salin").clicked() {
-                    ui.ctx().copy_text(self.result_text.clone());
+                for o in &outs {
+                    ui.add_space(2.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.add(egui::Label::new(RichText::new(o.display().to_string()).monospace().color(p.on_success_container)).truncate());
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        if theme::button_sm(ui, Kind::Filled, Some(icons::OPEN_IN_NEW), "Buka").clicked() {
+                            util::open_in_shell(o);
+                        }
+                        if theme::button_sm(ui, Kind::Outlined, Some(icons::FOLDER_OPEN), "Tampilkan di folder").clicked() {
+                            util::reveal_in_shell(o);
+                        }
+                        if o.extension().and_then(|e| e.to_str()) == Some("pdf") && theme::button_sm(ui, Kind::Outlined, Some(icons::REFRESH), "Pakai sebagai input").clicked() {
+                            self.files = vec![o.clone()];
+                            self.out_override = None;
+                            self.on_files_changed();
+                        }
+                    });
                 }
             });
-            egui::ScrollArea::vertical().max_height(300.0).id_salt("resscroll").show(ui, |ui| {
-                let mut s: &str = &self.result_text;
-                ui.add(egui::TextEdit::multiline(&mut s).desired_width(f32::INFINITY).desired_rows(8));
+        }
+        if !self.result_text.is_empty() {
+            ui.add_space(10.0);
+            theme::card(ui, CardKind::Filled, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(theme::title("Hasil teks"));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if theme::icon_button_sm(ui, icons::CONTENT_COPY, "Salin", true).clicked() {
+                            ui.ctx().copy_text(self.result_text.clone());
+                        }
+                    });
+                });
+                egui::ScrollArea::vertical().max_height(320.0).id_salt("resscroll").show(ui, |ui| {
+                    let mut s: &str = &self.result_text;
+                    ui.add(egui::TextEdit::multiline(&mut s).desired_width(f32::INFINITY).desired_rows(8));
+                });
             });
         }
     }
@@ -1301,36 +1518,45 @@ impl App {
     // ───────── preview ─────────
 
     fn preview_ui(&mut self, ui: &mut egui::Ui) {
+        let p = theme::pal(ui.ctx());
         ui.horizontal(|ui| {
-            if ui.add_enabled(self.page > 1, egui::Button::new("◀")).clicked() {
+            if theme::icon_button_ex(ui, icons::CHEVRON_LEFT, "Halaman sebelumnya", self.page > 1, 36.0, None).clicked() {
                 self.page -= 1;
                 self.sel = None;
             }
-            let mut p = self.page;
-            ui.add(egui::DragValue::new(&mut p).range(1..=self.total.max(1)));
-            if p != self.page {
-                self.page = p;
+            let mut pg = self.page;
+            ui.add(egui::DragValue::new(&mut pg).range(1..=self.total.max(1)));
+            if pg != self.page {
+                self.page = pg;
                 self.sel = None;
             }
-            ui.label(format!("/ {}", self.total));
-            if ui.add_enabled(self.page < self.total, egui::Button::new("▶")).clicked() {
+            ui.label(format!("dari {}", self.total));
+            if theme::icon_button_ex(ui, icons::CHEVRON_RIGHT, "Halaman berikutnya", self.page < self.total, 36.0, None).clicked() {
                 self.page += 1;
                 self.sel = None;
             }
-            ui.separator();
-            ui.add(egui::Slider::new(&mut self.zoom, 0.3..=2.5).text("zoom"));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if theme::icon_button_ex(ui, icons::ZOOM_IN, "Perbesar", true, 36.0, None).clicked() {
+                    self.zoom = (self.zoom * 1.15).min(2.5);
+                }
+                ui.label(format!("{:.0}%", self.zoom * 100.0));
+                if theme::icon_button_ex(ui, icons::ZOOM_OUT, "Perkecil", true, 36.0, None).clicked() {
+                    self.zoom = (self.zoom / 1.15).max(0.3);
+                }
+            });
         });
-        if let Some(e) = &self.pv.err {
-            ui.colored_label(Color32::LIGHT_RED, e);
+        if let Some(e) = self.pv.err.clone() {
+            theme::banner(ui, icons::ERROR, &e, BannerKind::Error);
             return;
         }
         let Some(tex) = self.pv.tex.clone() else {
-            ui.weak("Preview tidak tersedia");
+            ui.weak("Pratinjau tidak tersedia");
             return;
         };
         let (wpt, hpt) = self.pv.size_pt;
         let z = self.zoom * 1.1;
-        egui::ScrollArea::both().drag_to_scroll(false).id_salt("pvscroll").show(ui, |ui| {
+        egui::Frame::none().fill(p.sc_high).rounding(Rounding::same(16.0)).inner_margin(Margin::same(8.0)).show(ui, |ui| {
+        egui::ScrollArea::both().drag_to_scroll(false).auto_shrink([false, false]).id_salt("pvscroll").show(ui, |ui| {
             let size = Vec2::new(wpt * z, hpt * z);
             let resp = ui.add(egui::Image::new(SizedTexture::new(tex.id(), size)).sense(Sense::click_and_drag()));
             let rect = resp.rect;
@@ -1361,11 +1587,11 @@ impl App {
                 painter.rect_stroke(rr, 0.0, Stroke::new(1.0, stroke));
             };
             if let Some(r) = self.sel {
-                draw_rect(r, Color32::from_rgba_unmultiplied(40, 120, 255, 50), Color32::from_rgb(40, 120, 255));
+                draw_rect(r, theme::alpha(p.primary, 50), p.primary);
             }
             if let Some((x, y)) = self.pt {
                 if self.sel.is_none() {
-                    painter.circle_filled(to_px(x, y), 4.0, Color32::from_rgb(255, 60, 60));
+                    painter.circle_filled(to_px(x, y), 5.0, p.error);
                 }
             }
             for (p, r) in &self.redact_rects {
@@ -1387,8 +1613,8 @@ impl App {
                 }
             }
         });
+        });
     }
-
     // ───────── tugas ─────────
 
     fn run(&mut self, ctx: &egui::Context) {
@@ -1404,7 +1630,7 @@ impl App {
                 match $e {
                     Some(v) => v,
                     None => {
-                        self.status = format!("✖ {}", $m);
+                        self.notify(format!("✖ {}", $m));
                         return;
                     }
                 }
@@ -1420,7 +1646,7 @@ impl App {
         match tool {
             Merge => {
                 if all.len() < 2 {
-                    self.status = "✖ Tambahkan minimal 2 PDF".into();
+                    self.notify("✖ Tambahkan minimal 2 PDF".into());
                     return;
                 }
                 self.spawn(ctx, move |_| {
@@ -1442,7 +1668,7 @@ impl App {
             }
             RemovePages | ExtractPages => {
                 if spec.trim().is_empty() {
-                    self.status = "✖ Isi nomor halaman".into();
+                    self.notify("✖ Isi nomor halaman".into());
                     return;
                 }
                 let input = input.unwrap();
@@ -1516,7 +1742,7 @@ impl App {
             HtmlToPdf => {
                 let src = if self.html_src.trim().is_empty() { input.map(|p| p.display().to_string()).unwrap_or_default() } else { self.html_src.trim().to_string() };
                 if src.is_empty() {
-                    self.status = "✖ Isi URL atau pilih file HTML".into();
+                    self.notify("✖ Isi URL atau pilih file HTML".into());
                     return;
                 }
                 self.spawn(ctx, move |progress| {
@@ -1588,7 +1814,7 @@ impl App {
                     WmKind::Image { path: need!(self.wm_img.clone(), "Pilih gambar watermark"), scale: self.wm_scale }
                 } else {
                     if self.wm_text.trim().is_empty() {
-                        self.status = "✖ Teks watermark kosong".into();
+                        self.notify("✖ Teks watermark kosong".into());
                         return;
                     }
                     WmKind::Text { text: self.wm_text.clone(), size: self.wm_size, color: self.wm_color }
@@ -1620,7 +1846,7 @@ impl App {
             }
             PdfForms => {
                 if self.forms.is_empty() {
-                    self.status = "✖ Klik “Baca kolom form” dulu".into();
+                    self.notify("✖ Klik “Baca kolom form” dulu".into());
                     return;
                 }
                 let vals: Vec<(lopdf::ObjectId, String)> = self.forms.iter().zip(self.form_vals.iter()).map(|(f, v)| (f.id, v.clone())).collect();
@@ -1656,7 +1882,7 @@ impl App {
             Sign => {
                 let rect = need!(self.sel, "Seret kotak di preview untuk menentukan area tanda tangan");
                 if self.sign_img.is_none() && self.sign_name.trim().is_empty() {
-                    self.status = "✖ Pilih gambar tanda tangan atau isi nama".into();
+                    self.notify("✖ Pilih gambar tanda tangan atau isi nama".into());
                     return;
                 }
                 let o = SignOpts {
@@ -1726,21 +1952,448 @@ impl App {
     }
 
     fn settings_window(&mut self, ctx: &egui::Context) {
-        let mut open = self.show_settings;
-        egui::Window::new("⚙ Pengaturan").open(&mut open).collapsible(false).show(ctx, |ui| {
-            match render::pdfium_status() {
-                Ok(()) => ui.colored_label(Color32::LIGHT_GREEN, "PDFium: aktif (preview, OCR, konversi gambar, redaksi tersedia)"),
-                Err(e) => ui.colored_label(Color32::LIGHT_RED, format!("PDFium: {e}")),
-            };
-            ui.separator();
-            ui.label("Path tesseract.exe (kosong = otomatis):");
-            ui.text_edit_singleline(&mut self.tesseract_path);
-            ui.label("API key Anthropic (hanya di memori, tidak disimpan ke disk):");
-            ui.add(egui::TextEdit::singleline(&mut self.api_key).password(true).desired_width(320.0));
-            ui.label("Model Claude:");
-            ui.text_edit_singleline(&mut self.model);
+        // scrim
+        let screen = ctx.screen_rect();
+        egui::Area::new(Id::new("scrim")).order(Order::Middle).fixed_pos(screen.min).show(ctx, |ui| {
+            let (rect, resp) = ui.allocate_exact_size(screen.size(), Sense::click());
+            ui.painter().rect_filled(rect, 0.0, Color32::from_black_alpha(110));
+            if resp.clicked() {
+                self.show_settings = false;
+            }
         });
-        self.show_settings = open;
+        let mut close = false;
+        egui::Window::new("Pengaturan")
+            .title_bar(false)
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .collapsible(false)
+            .resizable(false)
+            .fixed_size(Vec2::new(460.0, 0.0))
+            .frame(egui::Frame::window(&ctx.style()).inner_margin(Margin::same(24.0)))
+            .show(ctx, |ui| {
+                ui.label(theme::headline("Pengaturan"));
+                ui.add_space(8.0);
+                ui.label(theme::title("Tampilan"));
+                let mut dark = self.dark;
+                theme::switch(ui, &mut dark, "Mode gelap");
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Aksen:");
+                    let mut acc = self.accent;
+                    for a in Accent::ALL {
+                        theme::choice(ui, &mut acc, a, a.name());
+                    }
+                    if acc != self.accent || dark != self.dark {
+                        self.set_theme(ctx, acc, dark);
+                    }
+                });
+                if dark != self.dark {
+                    self.set_theme(ctx, self.accent, dark);
+                }
+                ui.add_space(10.0);
+                ui.label(theme::title("Mesin PDF"));
+                match render::pdfium_status() {
+                    Ok(()) => theme::banner(ui, icons::CHECK_CIRCLE, "PDFium aktif: pratinjau, OCR, konversi gambar, dan redaksi tersedia.", BannerKind::Success),
+                    Err(e) => theme::banner(ui, icons::ERROR, &e, BannerKind::Error),
+                }
+                ui.add_space(10.0);
+                ui.label(theme::title("Program pendukung"));
+                ui.label("Path tesseract.exe (kosong = otomatis)");
+                ui.add(egui::TextEdit::singleline(&mut self.tesseract_path).desired_width(f32::INFINITY));
+                ui.add_space(10.0);
+                ui.label(theme::title("Claude API"));
+                ui.label("API key Anthropic (hanya di memori, tidak disimpan ke disk)");
+                ui.add(egui::TextEdit::singleline(&mut self.api_key).password(true).desired_width(f32::INFINITY));
+                ui.label("Model");
+                ui.add(egui::TextEdit::singleline(&mut self.model).desired_width(f32::INFINITY));
+                ui.add_space(12.0);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if theme::button(ui, Kind::Filled, None, "Selesai").clicked() {
+                        close = true;
+                    }
+                });
+            });
+        if close {
+            self.show_settings = false;
+        }
+    }
+
+    fn set_theme(&mut self, ctx: &egui::Context, accent: Accent, dark: bool) {
+        self.accent = accent;
+        self.dark = dark;
+        theme::apply(ctx, accent, dark);
+        save_cfg(accent, dark);
+    }
+
+    fn matching_tools(&self) -> Vec<Tool> {
+        let q = self.search.trim().to_lowercase();
+        CATS.iter()
+            .flat_map(|(_, ts)| ts.iter().copied())
+            .filter(|t| q.is_empty() || t.label().to_lowercase().contains(&q) || t.short().to_lowercase().contains(&q) || t.desc().to_lowercase().contains(&q))
+            .collect()
+    }
+
+    // ───────── kerangka M3 ─────────
+
+    fn appbar(&mut self, ctx: &egui::Context) {
+        let p = theme::pal(ctx);
+        egui::TopBottomPanel::top("appbar")
+            .exact_height(72.0)
+            .frame(egui::Frame::none().fill(p.surface).inner_margin(Margin::symmetric(16.0, 10.0)))
+            .show(ctx, |ui| {
+                ui.horizontal_centered(|ui| {
+                    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(46.0), Sense::click());
+                    if resp.hovered() {
+                        ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    ui.painter().rect_filled(rect, Rounding::same(15.0), p.primary);
+                    theme::paint_icon(ui.painter(), rect.center(), icons::PICTURE_AS_PDF, 28.0, p.on_primary);
+                    if resp.clicked() {
+                        self.home = true;
+                    }
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        ui.add_space(3.0);
+                        ui.label(RichText::new("PDF Studio").size(20.0).strong());
+                        ui.label(theme::label_small("Editor PDF all-in-one").color(p.on_surface_variant));
+                    });
+                    ui.add_space(20.0);
+                    let sid = Id::new("search_field");
+                    egui::Frame::none().fill(p.sc_high).rounding(Rounding::same(26.0)).inner_margin(Margin::symmetric(16.0, 7.0)).show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            theme::icon(ui, icons::SEARCH, 22.0, p.on_surface_variant);
+                            let r = ui.add(
+                                egui::TextEdit::singleline(&mut self.search)
+                                    .id(sid)
+                                    .frame(false)
+                                    .hint_text("Cari alat PDF…  (Ctrl+K)")
+                                    .desired_width(300.0),
+                            );
+                            if r.changed() && !self.search.trim().is_empty() {
+                                self.home = true;
+                            }
+                            if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                                if let Some(t) = self.matching_tools().first().copied() {
+                                    self.search.clear();
+                                    self.select_tool(t);
+                                }
+                            }
+                            if !self.search.is_empty() && theme::icon_button_sm(ui, icons::CLOSE, "Hapus pencarian", true).clicked() {
+                                self.search.clear();
+                            }
+                        });
+                    });
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if theme::icon_button(ui, icons::SETTINGS, "Pengaturan").clicked() {
+                            self.show_settings = !self.show_settings;
+                        }
+                        if theme::icon_button(ui, if self.dark { icons::LIGHT_MODE } else { icons::DARK_MODE }, if self.dark { "Mode terang" } else { "Mode gelap" }).clicked() {
+                            let (a, d) = (self.accent, !self.dark);
+                            self.set_theme(ctx, a, d);
+                        }
+                        let r = theme::icon_button(ui, icons::PALETTE, "Warna aksen");
+                        self.accent_btn = r.rect;
+                        if r.clicked() {
+                            self.accent_open = !self.accent_open;
+                        }
+                    });
+                });
+            });
+        if self.accent_open {
+            let mut pick = None;
+            let ar = egui::Area::new(Id::new("accent_pop"))
+                .order(Order::Foreground)
+                .pivot(Align2::RIGHT_TOP)
+                .fixed_pos(self.accent_btn.right_bottom() + Vec2::new(0.0, 6.0))
+                .show(ctx, |ui| {
+                    egui::Frame::popup(ui.style()).fill(p.sc_high).rounding(Rounding::same(16.0)).inner_margin(Margin::same(14.0)).show(ui, |ui| {
+                        ui.label(theme::title("Warna aksen"));
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            for a in Accent::ALL {
+                                let (rect, resp) = ui.allocate_exact_size(Vec2::splat(36.0), Sense::click());
+                                if resp.hovered() {
+                                    ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+                                }
+                                let col = theme::palette(a, self.dark).primary;
+                                ui.painter().circle_filled(rect.center(), 15.0, col);
+                                if a == self.accent {
+                                    ui.painter().circle_stroke(rect.center(), 17.5, Stroke::new(2.5, p.on_surface));
+                                    theme::paint_icon(ui.painter(), rect.center(), icons::CHECK, 18.0, p.sc_high);
+                                }
+                                if resp.on_hover_text(a.name()).clicked() {
+                                    pick = Some(a);
+                                }
+                            }
+                        });
+                    });
+                });
+            if let Some(a) = pick {
+                let d = self.dark;
+                self.set_theme(ctx, a, d);
+                self.accent_open = false;
+            }
+            if ctx.input(|i| i.pointer.any_pressed()) {
+                if let Some(pos) = ctx.input(|i| i.pointer.interact_pos()) {
+                    if !ar.response.rect.contains(pos) && !self.accent_btn.contains(pos) {
+                        self.accent_open = false;
+                    }
+                }
+            }
+        }
+    }
+
+    fn nav(&mut self, ctx: &egui::Context) {
+        let p = theme::pal(ctx);
+        egui::SidePanel::left("nav")
+            .resizable(false)
+            .exact_width(272.0)
+            .frame(egui::Frame::none().fill(p.sc_low).inner_margin(Margin::symmetric(12.0, 12.0)))
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    if nav_item(ui, &p, icons::HOME, "Beranda", self.home) {
+                        self.home = true;
+                    }
+                    ui.add_space(4.0);
+                    for (ci, (cat, tools)) in CATS.iter().enumerate() {
+                        let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 40.0), Sense::click());
+                        if resp.hovered() {
+                            ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+                            ui.painter().rect_filled(rect, Rounding::same(20.0), theme::alpha(p.on_surface, 14));
+                        }
+                        theme::paint_icon(ui.painter(), Pos2::new(rect.left() + 28.0, rect.center().y), CAT_ICONS[ci], 20.0, p.primary);
+                        ui.painter().text(Pos2::new(rect.left() + 52.0, rect.center().y), Align2::LEFT_CENTER, pretty(cat), egui::FontId::proportional(14.0), p.on_surface);
+                        theme::paint_icon(ui.painter(), Pos2::new(rect.right() - 24.0, rect.center().y), if self.nav_open[ci] { icons::EXPAND_LESS } else { icons::EXPAND_MORE }, 22.0, p.on_surface_variant);
+                        if resp.clicked() {
+                            self.nav_open[ci] = !self.nav_open[ci];
+                        }
+                        if self.nav_open[ci] {
+                            for t in tools.iter() {
+                                if nav_item(ui, &p, t.icon(), t.label(), !self.home && self.tool == *t) {
+                                    self.select_tool(*t);
+                                }
+                            }
+                            ui.add_space(4.0);
+                        }
+                    }
+                });
+            });
+    }
+
+    fn home_ui(&mut self, ui: &mut egui::Ui) {
+        let p = theme::pal(ui.ctx());
+        let q = self.search.trim().to_string();
+        let mut open: Option<Tool> = None;
+        if q.is_empty() {
+            let fr = egui::Frame::none().fill(p.primary_container).rounding(Rounding::same(28.0)).inner_margin(Margin::same(28.0)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new("Semua alat PDF, dalam satu aplikasi.").size(30.0).strong().color(p.on_primary_container));
+                ui.scope(|ui| {
+                    ui.set_max_width((ui.available_width() - 170.0).max(260.0));
+                    ui.add(egui::Label::new(RichText::new("Gabung, pisah, kompres, konversi, edit, amankan, sampai meringkas dengan AI. Cepat dan langsung di komputermu.").size(15.0).color(p.on_primary_container)).wrap());
+                });
+                ui.add_space(10.0);
+                ui.horizontal_wrapped(|ui| {
+                    if theme::button(ui, Kind::Filled, Some(icons::MERGE_TYPE), "Gabungkan PDF").clicked() {
+                        open = Some(Tool::Merge);
+                    }
+                    if theme::button(ui, Kind::Outlined, Some(icons::COMPRESS), "Kompres").clicked() {
+                        open = Some(Tool::Compress);
+                    }
+                    if theme::button(ui, Kind::Outlined, Some(icons::EDIT), "Edit PDF").clicked() {
+                        open = Some(Tool::EditPdf);
+                    }
+                    if theme::button(ui, Kind::Outlined, Some(icons::AUTO_AWESOME), "Ringkas dengan AI").clicked() {
+                        open = Some(Tool::Summarizer);
+                    }
+                });
+            });
+            ui.painter().text(fr.response.rect.right_center() - Vec2::new(90.0, 0.0), Align2::CENTER_CENTER, icons::PICTURE_AS_PDF.to_string(), theme::icon_font(120.0), theme::alpha(p.on_primary_container, 40));
+            ui.add_space(14.0);
+            for (ci, (cat, tools)) in CATS.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    theme::icon_badge(ui, CAT_ICONS[ci], 34.0, p.secondary_container, p.on_secondary_container);
+                    ui.label(theme::title(&pretty(cat)));
+                    ui.label(RichText::new(format!("{} alat", tools.len())).color(p.on_surface_variant));
+                });
+                if let Some(t) = tool_grid(ui, &p, tools) {
+                    open = Some(t);
+                }
+                ui.add_space(12.0);
+            }
+        } else {
+            ui.label(theme::headline(&format!("Hasil untuk “{q}”")));
+            let res = self.matching_tools();
+            if res.is_empty() {
+                theme::banner(ui, icons::INFO, "Tidak ada alat yang cocok. Coba kata lain, misalnya: gabung, kompres, putar, sensor, terjemah.", BannerKind::Info);
+            } else {
+                ui.label(RichText::new("Tekan Enter untuk membuka hasil pertama.").color(p.on_surface_variant));
+                ui.add_space(6.0);
+                if let Some(t) = tool_grid(ui, &p, &res) {
+                    open = Some(t);
+                }
+            }
+        }
+        if let Some(t) = open {
+            self.search.clear();
+            self.select_tool(t);
+        }
+    }
+
+    fn snackbar(&mut self, ctx: &egui::Context) {
+        let Some(s) = &self.snack else { return };
+        let limit = if s.kind == BannerKind::Error { 14.0 } else { 7.0 };
+        if s.at.elapsed().as_secs_f32() > limit {
+            self.snack = None;
+            return;
+        }
+        ctx.request_repaint_after(std::time::Duration::from_millis(400));
+        let p = theme::pal(ctx);
+        let (text, kind) = (s.text.clone(), s.kind);
+        let (ic, icc) = match kind {
+            BannerKind::Error => (icons::ERROR, Color32::from_rgb(0xEF, 0x77, 0x6F)),
+            BannerKind::Success => (icons::CHECK_CIRCLE, Color32::from_rgb(0x4C, 0xAF, 0x6A)),
+            _ => (icons::INFO, p.inverse_primary),
+        };
+        let has_out = kind == BannerKind::Success && !self.outputs.is_empty();
+        let mut dismiss = false;
+        let mut open_out = false;
+        egui::Area::new(Id::new("snackbar")).order(Order::Foreground).anchor(Align2::CENTER_BOTTOM, Vec2::new(136.0, -104.0)).show(ctx, |ui| {
+            egui::Frame::none()
+                .fill(p.inverse_surface)
+                .rounding(Rounding::same(10.0))
+                .inner_margin(Margin::symmetric(18.0, 14.0))
+                .shadow(egui::epaint::Shadow { offset: Vec2::new(0.0, 4.0), blur: 16.0, spread: 0.0, color: Color32::from_black_alpha(90) })
+                .show(ui, |ui| {
+                    ui.set_max_width(520.0);
+                    ui.horizontal(|ui| {
+                        theme::icon(ui, ic, 22.0, icc);
+                        ui.add(egui::Label::new(RichText::new(&text).color(p.inverse_on_surface).size(14.5)).wrap());
+                        ui.add_space(8.0);
+                        if has_out && ui.add(egui::Label::new(RichText::new("BUKA").color(p.inverse_primary).strong()).sense(Sense::click())).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                            open_out = true;
+                        }
+                        if ui.add(egui::Label::new(RichText::new("TUTUP").color(p.inverse_primary).strong()).sense(Sense::click())).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                            dismiss = true;
+                        }
+                    });
+                });
+        });
+        if open_out {
+            if let Some(o) = self.outputs.first() {
+                util::open_in_shell(o);
+            }
+        }
+        if dismiss || open_out {
+            self.snack = None;
+        }
+    }
+
+}
+
+fn pretty(cat: &str) -> String {
+    cat.split(' ')
+        .map(|w| {
+            if w == "PDF" {
+                w.to_string()
+            } else if w == "TO" || w == "FROM" {
+                w.to_lowercase()
+            } else {
+                let mut c = w.chars();
+                c.next().map(|f| f.to_uppercase().collect::<String>() + &c.as_str().to_lowercase()).unwrap_or_default()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn nav_item(ui: &mut egui::Ui, p: &theme::Palette, ic: char, label: &str, selected: bool) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 44.0), Sense::click());
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let painter = ui.painter();
+    if selected {
+        painter.rect_filled(rect, Rounding::same(22.0), p.secondary_container);
+    } else if resp.hovered() {
+        painter.rect_filled(rect, Rounding::same(22.0), theme::alpha(p.on_surface, 16));
+    }
+    let fg = if selected { p.on_secondary_container } else { p.on_surface_variant };
+    theme::paint_icon(painter, Pos2::new(rect.left() + 28.0, rect.center().y), ic, 22.0, fg);
+    painter.text(Pos2::new(rect.left() + 56.0, rect.center().y), Align2::LEFT_CENTER, label, egui::FontId::proportional(14.5), fg);
+    resp.clicked()
+}
+
+fn tool_grid(ui: &mut egui::Ui, p: &theme::Palette, tools: &[Tool]) -> Option<Tool> {
+    let gap = 12.0;
+    let avail = ui.available_width();
+    let n = (((avail + gap) / (280.0 + gap)).floor() as usize).max(1);
+    let w = ((avail - gap * (n as f32 - 1.0)) / n as f32).floor() - 1.0;
+    let mut out = None;
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::splat(gap);
+        ui.horizontal_wrapped(|ui| {
+            for t in tools {
+                if tool_card(ui, p, *t, w) {
+                    out = Some(*t);
+                }
+            }
+        });
+    });
+    out
+}
+
+fn tool_card(ui: &mut egui::Ui, p: &theme::Palette, t: Tool, w: f32) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 100.0), Sense::click());
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let painter = ui.painter();
+    let rd = Rounding::same(16.0);
+    painter.rect_filled(rect, rd, if resp.hovered() { p.sc_high } else { p.sc_low });
+    if resp.is_pointer_button_down_on() {
+        painter.rect_filled(rect, rd, theme::alpha(p.on_surface, 20));
+    }
+    let c = Pos2::new(rect.left() + 16.0 + 23.0, rect.top() + 16.0 + 23.0);
+    painter.circle_filled(c, 23.0, p.secondary_container);
+    theme::paint_icon(painter, c, t.icon(), 26.0, p.on_secondary_container);
+    let tx = rect.left() + 16.0 + 46.0 + 14.0;
+    painter.text(Pos2::new(tx, rect.top() + 24.0), Align2::LEFT_CENTER, t.label(), egui::FontId::proportional(15.5), p.on_surface);
+    let first = t.short().to_string();
+    let mut job = egui::text::LayoutJob::single_section(first, egui::TextFormat { font_id: egui::FontId::proportional(12.5), color: p.on_surface_variant, ..Default::default() });
+    job.wrap.max_width = (rect.right() - tx - 14.0).max(40.0);
+    job.wrap.max_rows = 3;
+    let g = painter.layout_job(job);
+    painter.galley(Pos2::new(tx, rect.top() + 40.0), g, p.on_surface_variant);
+    resp.clicked()
+}
+
+fn cfg_path() -> Option<PathBuf> {
+    let base = std::env::var_os("APPDATA").map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+    Some(base.join("pdf-studio").join("theme.txt"))
+}
+
+fn load_cfg(sys_dark: bool) -> (Accent, bool) {
+    let (mut accent, mut dark) = (Accent::Purple, sys_dark);
+    if let Some(t) = cfg_path().and_then(|p| std::fs::read_to_string(p).ok()) {
+        for l in t.lines() {
+            if let Some(v) = l.strip_prefix("dark=") {
+                dark = v.trim() == "1";
+            }
+            if let Some(v) = l.strip_prefix("accent=") {
+                if let Some(a) = Accent::ALL.iter().find(|a| a.name() == v.trim()) {
+                    accent = *a;
+                }
+            }
+        }
+    }
+    (accent, dark)
+}
+
+fn save_cfg(accent: Accent, dark: bool) {
+    if let Some(p) = cfg_path() {
+        if let Some(d) = p.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        let _ = std::fs::write(p, format!("dark={}\naccent={}\n", if dark { 1 } else { 0 }, accent.name()));
     }
 }
 
@@ -1764,63 +2417,82 @@ impl eframe::App for App {
         self.poll();
         let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().filter_map(|f| f.path.clone()).collect());
         if !dropped.is_empty() && !self.busy {
+            if self.home {
+                // dari beranda: pilih alat yang cocok dengan jenis file
+                let e = dropped[0].extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                let t = match e.as_str() {
+                    "pdf" => Some(if dropped.len() > 1 { Tool::Merge } else { Tool::EditPdf }),
+                    "jpg" | "jpeg" | "png" => Some(Tool::JpgToPdf),
+                    "doc" | "docx" | "rtf" | "odt" => Some(Tool::WordToPdf),
+                    "ppt" | "pptx" | "odp" => Some(Tool::PowerpointToPdf),
+                    "xls" | "xlsx" | "csv" | "ods" => Some(Tool::ExcelToPdf),
+                    "html" | "htm" => Some(Tool::HtmlToPdf),
+                    _ => None,
+                };
+                if let Some(t) = t {
+                    self.select_tool(t);
+                }
+            }
             if self.tool == Tool::HtmlToPdf {
                 self.html_src = dropped[0].display().to_string();
             } else {
                 self.add_files(dropped);
             }
         }
+        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::K)) {
+            ctx.memory_mut(|m| m.request_focus(Id::new("search_field")));
+        }
         self.refresh_preview(ctx);
+        let p = theme::pal(ctx);
 
-        egui::SidePanel::left("nav").resizable(false).exact_width(215.0).show(ctx, |ui| {
-            ui.add_space(6.0);
-            ui.heading("PDF Studio");
-            ui.add_space(4.0);
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for (cat, tools) in CATS {
-                    ui.add_space(6.0);
-                    ui.label(RichText::new(*cat).small().strong().color(Color32::GRAY));
-                    for t in *tools {
-                        if ui.selectable_label(self.tool == *t, t.label()).clicked() {
-                            self.select_tool(*t);
-                        }
+        self.appbar(ctx);
+        self.nav(ctx);
+        let tool_screen = !self.home;
+        if tool_screen && self.tool != Tool::Compare {
+            egui::TopBottomPanel::bottom("runbar")
+                .frame(egui::Frame::none().fill(p.sc).inner_margin(Margin::symmetric(20.0, 6.0)))
+                .show(ctx, |ui| {
+                    self.run_bar(ui, ctx);
+                });
+        }
+        if tool_screen && self.tool.uses_preview() && self.total > 0 {
+            egui::SidePanel::right("preview")
+                .resizable(true)
+                .default_width(500.0)
+                .min_width(300.0)
+                .frame(egui::Frame::none().fill(p.surface).inner_margin(Margin { left: 4.0, right: 20.0, top: 12.0, bottom: 8.0 }))
+                .show(ctx, |ui| {
+                    ui.label(theme::title("Pratinjau"));
+                    self.preview_ui(ui);
+                });
+        }
+        egui::CentralPanel::default()
+            .frame(egui::Frame::none().fill(p.surface).inner_margin(Margin { left: 28.0, right: 24.0, top: 12.0, bottom: 8.0 }))
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    if self.home {
+                        self.home_ui(ui);
+                    } else {
+                        ui.set_max_width(ui.available_width().min(1000.0));
+                        self.tool_ui(ui, ctx);
                     }
-                }
-                ui.add_space(12.0);
-                ui.separator();
-                if ui.button("⚙ Pengaturan").clicked() {
-                    self.show_settings = !self.show_settings;
-                }
+                });
             });
-        });
-
-        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                if self.busy {
-                    ui.spinner();
-                }
-                ui.label(&self.status);
-            });
-        });
-
-        let show_pv = self.tool.uses_preview() && self.total > 0;
-        if show_pv {
-            egui::SidePanel::right("preview").resizable(true).default_width(520.0).min_width(280.0).show(ctx, |ui| {
-                self.preview_ui(ui);
-            });
-        }
-        if self.tool != Tool::Compare {
-            egui::TopBottomPanel::bottom("runbar").show(ctx, |ui| {
-                self.run_bar(ui, ctx);
-            });
-        }
-        egui::CentralPanel::default().show(ctx, |ui| {
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                self.tool_ui(ui, ctx);
-            });
-        });
+        self.snackbar(ctx);
         if self.show_settings {
             self.settings_window(ctx);
         }
+        if ctx.input(|i| !i.raw.hovered_files.is_empty()) {
+            let screen = ctx.screen_rect();
+            egui::Area::new(Id::new("dropov")).order(Order::Foreground).fixed_pos(screen.min).interactable(false).show(ctx, |ui| {
+                ui.painter().rect_filled(screen, 0.0, theme::alpha(p.primary, 60));
+                let c = screen.center();
+                let r = Rect::from_center_size(c, Vec2::new(380.0, 170.0));
+                ui.painter().rect_filled(r, Rounding::same(28.0), p.sc_high);
+                theme::paint_icon(ui.painter(), c - Vec2::new(0.0, 28.0), icons::UPLOAD_FILE, 54.0, p.primary);
+                ui.painter().text(c + Vec2::new(0.0, 36.0), Align2::CENTER_CENTER, "Lepaskan file di sini", egui::FontId::proportional(20.0), p.on_surface);
+            });
+        }
     }
+
 }
