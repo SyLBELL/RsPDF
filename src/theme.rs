@@ -263,7 +263,11 @@ pub fn apply(ctx: &Context, accent: Accent, dark: bool) {
     v.widgets.active.rounding = r;
     v.widgets.active.expansion = 0.0;
     v.widgets.open = v.widgets.inactive;
-    ctx.set_visuals(v);
+    // Paksa tema egui mengikuti pilihan kita (bukan tema sistem) dan isi KEDUA slot gaya,
+    // supaya perubahan tema Windows saat berjalan tidak mengembalikan gaya bawaan egui.
+    ctx.set_theme(if dark { egui::Theme::Dark } else { egui::Theme::Light });
+    ctx.set_visuals_of(egui::Theme::Dark, v.clone());
+    ctx.set_visuals_of(egui::Theme::Light, v);
 
     let mut st = (*ctx.style()).clone();
     st.spacing.item_spacing = Vec2::new(8.0, 8.0);
@@ -275,7 +279,52 @@ pub fn apply(ctx: &Context, accent: Accent, dark: bool) {
     st.text_styles.insert(TextStyle::Button, FontId::proportional(14.0));
     st.text_styles.insert(TextStyle::Small, FontId::proportional(12.0));
     st.text_styles.insert(TextStyle::Monospace, FontId::monospace(13.0));
-    ctx.set_style(st);
+    let (spacing, text_styles) = (st.spacing.clone(), st.text_styles.clone());
+    ctx.all_styles_mut(|s| {
+        s.spacing = spacing.clone();
+        s.text_styles = text_styles.clone();
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame(ctx: &Context, sys: Option<egui::Theme>) {
+        let raw = egui::RawInput { system_theme: sys, ..Default::default() };
+        let _ = ctx.run(raw, |_| {});
+    }
+
+    #[test]
+    fn tema_tidak_ditimpa_tema_sistem() {
+        let ctx = Context::default();
+        // Aplikasi memilih gelap, tetapi Windows memakai mode terang.
+        apply(&ctx, Accent::Purple, true);
+        frame(&ctx, Some(egui::Theme::Light));
+        frame(&ctx, Some(egui::Theme::Light));
+        let v = ctx.style().visuals.clone();
+        assert!(v.dark_mode);
+        assert_eq!(v.extreme_bg_color, palette(Accent::Purple, true).sc_lowest);
+        assert_eq!(v.override_text_color, Some(palette(Accent::Purple, true).on_surface));
+        // Sebaliknya: pilih terang saat sistem gelap.
+        apply(&ctx, Accent::Teal, false);
+        frame(&ctx, Some(egui::Theme::Dark));
+        let v = ctx.style().visuals.clone();
+        assert!(!v.dark_mode);
+        assert_eq!(v.extreme_bg_color, palette(Accent::Teal, false).sc_lowest);
+    }
+
+    #[test]
+    fn perilaku_lama_memang_rusak() {
+        let ctx = Context::default();
+        let mut v = egui::Visuals::dark();
+        v.extreme_bg_color = Color32::from_rgb(1, 2, 3);
+        ctx.set_visuals(v); // cara lama: hanya slot aktif
+        frame(&ctx, Some(egui::Theme::Light));
+        frame(&ctx, Some(egui::Theme::Light));
+        assert_ne!(ctx.style().visuals.extreme_bg_color, Color32::from_rgb(1, 2, 3));
+        assert!(!ctx.style().visuals.dark_mode);
+    }
 }
 
 // ───────────────────────── teks & ikon ─────────────────────────
@@ -286,6 +335,11 @@ pub fn headline(t: &str) -> RichText {
 pub fn title(t: &str) -> RichText {
     RichText::new(t).size(17.0).strong()
 }
+/// Teks petunjuk (placeholder) kolom isian: redup agar tidak tampak seperti isi sungguhan.
+pub fn hint(ctx: &Context, t: &str) -> RichText {
+    RichText::new(t).color(alpha(pal(ctx).on_surface_variant, 170))
+}
+
 pub fn label_small(t: &str) -> RichText {
     RichText::new(t).size(12.0)
 }

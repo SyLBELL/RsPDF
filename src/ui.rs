@@ -228,6 +228,7 @@ struct Snack {
 pub struct App {
     // tampilan
     dark: bool,
+    follow_system: bool,
     accent: Accent,
     home: bool,
     search: String,
@@ -332,12 +333,13 @@ pub struct App {
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, args: Vec<String>) -> Self {
         theme::install_fonts(&cc.egui_ctx);
-        let sys_dark = cc.egui_ctx.style().visuals.dark_mode;
-        let (accent, dark) = load_cfg(sys_dark);
+        let (accent, saved_dark) = load_cfg();
+        let dark = saved_dark.unwrap_or(true);
         theme::apply(&cc.egui_ctx, accent, dark);
         let (tx, rx) = channel();
         let mut app = Self {
             dark,
+            follow_system: saved_dark.is_none(),
             accent,
             home: true,
             search: String::new(),
@@ -688,7 +690,7 @@ impl App {
         if input == Input::Html {
             ui.label("Alamat web (URL) atau file HTML lokal");
             ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut self.html_src).desired_width((ui.available_width() - 170.0).max(200.0)).hint_text("https://contoh.com  atau  C:\\path\\file.html"));
+                ui.add(egui::TextEdit::singleline(&mut self.html_src).desired_width((ui.available_width() - 170.0).max(200.0)).hint_text(theme::hint(ui.ctx(), "https://contoh.com  atau  C:\\path\\file.html")));
                 if theme::button(ui, Kind::Tonal, Some(icons::FOLDER_OPEN), "Pilih file").clicked() {
                     if let Some(f) = rfd::FileDialog::new().add_filter("HTML", &["html", "htm"]).pick_file() {
                         self.html_src = f.display().to_string();
@@ -831,7 +833,7 @@ impl App {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 theme::icon(ui, icons::LOCK, 20.0, p.on_surface_variant);
-                let r = ui.add(egui::TextEdit::singleline(&mut self.password).password(true).desired_width(220.0).hint_text("Password PDF (jika ada)"));
+                let r = ui.add(egui::TextEdit::singleline(&mut self.password).password(true).desired_width(220.0).hint_text(theme::hint(ui.ctx(), "Password PDF (jika ada)")));
                 if r.lost_focus() && (r.changed() || ui.input(|i| i.key_pressed(egui::Key::Enter))) {
                     self.refresh_total();
                 }
@@ -852,7 +854,7 @@ impl App {
     fn pages_row(&mut self, ui: &mut egui::Ui, hint: &str) {
         ui.horizontal_wrapped(|ui| {
             ui.label("Halaman:");
-            ui.add(egui::TextEdit::singleline(&mut self.pages_spec).desired_width(200.0).hint_text(hint));
+            ui.add(egui::TextEdit::singleline(&mut self.pages_spec).desired_width(200.0).hint_text(theme::hint(ui.ctx(), hint)));
             ui.weak("(kosong = semua) contoh: 1-3,5,8-");
         });
     }
@@ -1127,7 +1129,7 @@ impl App {
             Tool::Redact => {
                 ui.horizontal_wrapped(|ui| {
                     ui.label("Sensor teks (pisahkan dengan ;):");
-                    ui.add(egui::TextEdit::singleline(&mut self.redact_terms).desired_width(260.0).hint_text("mis. 12345; rahasia"));
+                    ui.add(egui::TextEdit::singleline(&mut self.redact_terms).desired_width(260.0).hint_text(theme::hint(ui.ctx(), "mis. 12345; rahasia")));
                 });
                 self.sel_info(ui);
                 ui.horizontal_wrapped(|ui| {
@@ -1186,12 +1188,18 @@ impl App {
     fn tool_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let p = theme::pal(ctx);
         let t = self.tool;
-        ui.horizontal(|ui| {
+        ui.horizontal_top(|ui| {
             theme::icon_badge(ui, t.icon(), 56.0, p.primary_container, p.on_primary_container);
             ui.add_space(4.0);
-            ui.vertical(|ui| {
+            let w = (ui.available_width() - 64.0).max(180.0);
+            ui.allocate_ui_with_layout(Vec2::new(w, 0.0), Layout::top_down(Align::LEFT), |ui| {
                 ui.label(theme::headline(t.label()));
                 ui.add(egui::Label::new(RichText::new(t.desc()).color(p.on_surface_variant)).wrap());
+            });
+            ui.with_layout(Layout::right_to_left(Align::TOP), |ui| {
+                if theme::icon_button_ex(ui, icons::CLOSE, "Tutup dan kembali ke Beranda (Esc)", true, 44.0, Some(p.on_surface)).clicked() {
+                    self.home = true;
+                }
             });
         });
         ui.add_space(10.0);
@@ -2019,6 +2027,7 @@ impl App {
     fn set_theme(&mut self, ctx: &egui::Context, accent: Accent, dark: bool) {
         self.accent = accent;
         self.dark = dark;
+        self.follow_system = false;
         theme::apply(ctx, accent, dark);
         save_cfg(accent, dark);
     }
@@ -2064,7 +2073,7 @@ impl App {
                                 egui::TextEdit::singleline(&mut self.search)
                                     .id(sid)
                                     .frame(false)
-                                    .hint_text("Cari alat PDF…  (Ctrl+K)")
+                                    .hint_text(theme::hint(ui.ctx(), "Cari alat PDF…  (Ctrl+K)"))
                                     .desired_width(300.0),
                             );
                             if r.changed() && !self.search.trim().is_empty() {
@@ -2371,12 +2380,12 @@ fn cfg_path() -> Option<PathBuf> {
     Some(base.join("pdf-studio").join("theme.txt"))
 }
 
-fn load_cfg(sys_dark: bool) -> (Accent, bool) {
-    let (mut accent, mut dark) = (Accent::Purple, sys_dark);
+fn load_cfg() -> (Accent, Option<bool>) {
+    let (mut accent, mut dark) = (Accent::Purple, None);
     if let Some(t) = cfg_path().and_then(|p| std::fs::read_to_string(p).ok()) {
         for l in t.lines() {
             if let Some(v) = l.strip_prefix("dark=") {
-                dark = v.trim() == "1";
+                dark = Some(v.trim() == "1");
             }
             if let Some(v) = l.strip_prefix("accent=") {
                 if let Some(a) = Accent::ALL.iter().find(|a| a.name() == v.trim()) {
@@ -2414,6 +2423,33 @@ fn fmt_size(b: u64) -> String {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Sebelum pengguna memilih tema sendiri, ikuti mode terang/gelap Windows.
+        if self.follow_system {
+            if let Some(t) = ctx.system_theme() {
+                let sys_dark = t == egui::Theme::Dark;
+                if sys_dark != self.dark {
+                    self.dark = sys_dark;
+                    theme::apply(ctx, self.accent, sys_dark);
+                }
+            }
+        }
+        // Esc: tutup dialog/popup, lepas fokus kolom isian, lalu kembali ke Beranda.
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            if self.show_settings {
+                self.show_settings = false;
+            } else if self.accent_open {
+                self.accent_open = false;
+            } else if let Some(id) = ctx.memory(|m| m.focused()) {
+                if id == Id::new("search_field") {
+                    self.search.clear();
+                }
+                ctx.memory_mut(|m| m.surrender_focus(id));
+            } else if !self.search.is_empty() {
+                self.search.clear();
+            } else if !self.home {
+                self.home = true;
+            }
+        }
         self.poll();
         let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().filter_map(|f| f.path.clone()).collect());
         if !dropped.is_empty() && !self.busy {
