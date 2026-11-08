@@ -31,10 +31,10 @@ const CATS: &[(&str, &[Tool])] = &[
     ("ORGANIZE PDF", &[Tool::Merge, Tool::Split, Tool::RemovePages, Tool::ExtractPages, Tool::Organize, Tool::ScanToPdf]),
     ("OPTIMIZE PDF", &[Tool::Compress, Tool::Repair, Tool::Ocr]),
     ("CONVERT TO PDF", &[Tool::JpgToPdf, Tool::WordToPdf, Tool::PowerpointToPdf, Tool::ExcelToPdf, Tool::HtmlToPdf]),
-    ("CONVERT FROM PDF", &[Tool::PdfToJpg, Tool::PdfToWord, Tool::PdfToPowerpoint, Tool::PdfToExcel, Tool::PdfToPdfa]),
+    ("CONVERT FROM PDF", &[Tool::PdfToJpg, Tool::PdfToWord, Tool::PdfToPowerpoint, Tool::PdfToExcel, Tool::PdfToPdfa, Tool::PdfToMarkdown]),
     ("EDIT PDF", &[Tool::Rotate, Tool::AddPageNumbers, Tool::AddWatermark, Tool::Crop, Tool::EditPdf, Tool::PdfForms]),
     ("PDF SECURITY", &[Tool::Unlock, Tool::Protect, Tool::Sign, Tool::Redact, Tool::Compare]),
-    ("PDF INTELLIGENCE", &[Tool::Summarizer, Tool::Translate, Tool::PdfToMarkdown]),
+    ("PDF INTELLIGENCE", &[Tool::Summarizer, Tool::Translate]),
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq)]

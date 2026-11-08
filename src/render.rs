@@ -244,6 +244,19 @@ pub fn blocks(path: &Path, password: &str) -> Result<Vec<Block>> {
         }
     }
     let body = hist.into_iter().max_by_key(|(_, n)| *n).map(|(s, _)| s as f32 / 2.0).unwrap_or(11.0);
+    // Peringkat ukuran huruf judul: terbesar = tingkat 1, berikutnya tingkat 2, dst (maks 4).
+    let mut hsizes: Vec<f32> = Vec::new();
+    for p in &pages {
+        for l in p {
+            if l.cells.len() < 2 && l.size / body >= 1.13 && !l.text().is_empty() {
+                let r = (l.size * 2.0).round() / 2.0;
+                if !hsizes.iter().any(|s| (s - r).abs() < 0.26) {
+                    hsizes.push(r);
+                }
+            }
+        }
+    }
+    hsizes.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
     let mut out: Vec<Block> = Vec::new();
     for (pi, lines) in pages.iter().enumerate() {
         let mut prev: Option<(f32, f32, bool)> = None; // (top, size, was_para)
@@ -262,7 +275,12 @@ pub fn blocks(path: &Path, password: &str) -> Result<Vec<Block>> {
                 continue;
             }
             let ratio = l.size / body;
-            let level = if ratio >= 1.6 { Some(1) } else if ratio >= 1.3 { Some(2) } else if ratio >= 1.13 { Some(3) } else { None };
+            let level = if ratio >= 1.13 {
+                let r = (l.size * 2.0).round() / 2.0;
+                hsizes.iter().position(|s| (s - r).abs() < 0.26).map(|i| ((i + 1).min(4)) as u8)
+            } else {
+                None
+            };
             match level {
                 Some(lv) => {
                     out.push(Block { page: pi as u32 + 1, kind: BlockKind::Heading(lv), text });
@@ -314,7 +332,7 @@ pub fn to_markdown(path: &Path, password: &str) -> Result<String> {
                     cells.resize(cols, String::new());
                     md.push_str(&format!("| {} |\n", cells.join(" | ")));
                     if k == 0 {
-                        md.push_str(&format!("|{}|\n", " --- |".repeat(cols)));
+                        md.push_str(&format!("|{}\n", " --- |".repeat(cols)));
                     }
                 }
                 md.push('\n');
